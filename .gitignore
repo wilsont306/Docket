@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build outputs
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# expo / eas
+.expo/
+apps/mobile/ios/
+apps/mobile/android/
+
+# vercel
+.vercel/
+
+# python
+services/guardrails/.venv/
+services/guardrails/__pycache__/
+services/guardrails/*.pyc
+
+# os / editor
+.DS_Store
+*.log
