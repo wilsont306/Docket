@@ -1,14 +1,9 @@
 "use client";
 
-import { useState } from "react";
-import { DateTime } from "luxon";
-import type { ParsedEvent } from "@calendar-auto/core";
-
-interface DraftEventRow {
-  id: string;
-  draftId: string;
-  event: ParsedEvent;
-}
+import { useRef, useState } from "react";
+import { ReviewSurface, type CaptureSource } from "./ReviewSurface";
+import type { DraftEventRow } from "./DraftCard";
+import { preprocessImage } from "@/lib/image-preprocess";
 
 interface CommitResult {
   id: string;
@@ -19,34 +14,29 @@ interface CommitResult {
 type Phase =
   | { name: "capture" }
   | { name: "loading" }
-  | { name: "review"; draftId: string; events: DraftEventRow[] }
+  | { name: "review"; draftId: string; events: DraftEventRow[]; source: CaptureSource | null }
   | { name: "committed"; result: CommitResult; secondsLeft: number }
   | { name: "error"; message: string };
 
-function toLocalInputValue(iso: string | null, timezone: string): string {
-  if (!iso) return "";
-  const dt = DateTime.fromISO(iso, { zone: timezone });
-  return dt.isValid ? dt.toFormat("yyyy-LL-dd'T'HH:mm") : "";
-}
-
-function fromLocalInputValue(local: string, timezone: string): string | null {
-  const dt = DateTime.fromFormat(local, "yyyy-LL-dd'T'HH:mm", { zone: timezone });
-  return dt.isValid ? dt.toISO({ suppressMilliseconds: true }) : null;
-}
-
 /**
- * M1's "minimal confirm" (§11 M1 exit criterion: pasted text becomes a
- * correct event). This is deliberately not the split-pane review surface
- * from §4 -- ghost blocks, conflict detection, and the full clarifying-
- * question UI are M2 scope. What's here is the smallest loop that proves
- * the pipeline end to end: paste text, see the parsed draft, edit the
- * fields that matter, confirm, and get a real undo window.
+ * §11 M2/M3 exit criteria: "Full review loop on web" and "Roster photo ->
+ * correct batch." Owns the capture -> review -> commit state machine across
+ * both input paths; the review step itself is ReviewSurface.
  */
 export function CaptureFlow() {
   const [phase, setPhase] = useState<Phase>({ name: "capture" });
   const [sourceText, setSourceText] = useState("");
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const libraryInputRef = useRef<HTMLInputElement>(null);
 
-  async function handleParse() {
+  async function loadDraft(draftId: string) {
+    const draftRes = await fetch(`/api/drafts/${draftId}`);
+    const draft = await draftRes.json();
+    if (!draftRes.ok) throw new Error(draft.error ?? "Failed to load draft");
+    setPhase({ name: "review", draftId, events: draft.events, source: draft.source ?? null });
+  }
+
+  async function handleParseText() {
     if (!sourceText.trim()) return;
     setPhase({ name: "loading" });
     try {
@@ -58,58 +48,46 @@ export function CaptureFlow() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to parse");
-
-      const draftRes = await fetch(`/api/drafts/${data.draftId}`);
-      const draft = await draftRes.json();
-      if (!draftRes.ok) throw new Error(draft.error ?? "Failed to load draft");
-
-      setPhase({ name: "review", draftId: data.draftId, events: draft.events });
+      await loadDraft(data.draftId);
     } catch (error) {
       setPhase({ name: "error", message: error instanceof Error ? error.message : "Something went wrong" });
     }
   }
 
-  async function handleFieldChange(draftId: string, eventId: string, field: string, value: unknown) {
-    if (phase.name !== "review") return;
-    const res = await fetch(`/api/drafts/${draftId}/events/${eventId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ field, value }),
-    });
-    const updated = await res.json();
-    if (!res.ok) return;
-    setPhase({
-      ...phase,
-      events: phase.events.map((e) => (e.id === eventId ? updated : e)),
-    });
-  }
-
-  async function handleConfirm() {
-    if (phase.name !== "review") return;
-    const draftId = phase.draftId;
+  async function handlePhotoSelected(file: File | undefined) {
+    if (!file) return;
     setPhase({ name: "loading" });
     try {
-      const res = await fetch(`/api/drafts/${draftId}/commit`, { method: "POST" });
-      const result = await res.json();
-      if (!res.ok) throw new Error(result.error ?? "Failed to commit");
+      const processed = await preprocessImage(file);
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const formData = new FormData();
+      formData.set("file", processed, "capture.jpg");
+      formData.set("timezone", timezone);
 
-      setPhase({ name: "committed", result, secondsLeft: 10 });
-      const interval = setInterval(() => {
-        setPhase((prev) => {
-          if (prev.name !== "committed") {
-            clearInterval(interval);
-            return prev;
-          }
-          if (prev.secondsLeft <= 1) {
-            clearInterval(interval);
-            return { ...prev, secondsLeft: 0 };
-          }
-          return { ...prev, secondsLeft: prev.secondsLeft - 1 };
-        });
-      }, 1000);
+      const res = await fetch("/api/captures", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to parse");
+      await loadDraft(data.draftId);
     } catch (error) {
       setPhase({ name: "error", message: error instanceof Error ? error.message : "Something went wrong" });
     }
+  }
+
+  function handleCommitted(result: CommitResult) {
+    setPhase({ name: "committed", result, secondsLeft: 10 });
+    const interval = setInterval(() => {
+      setPhase((prev) => {
+        if (prev.name !== "committed") {
+          clearInterval(interval);
+          return prev;
+        }
+        if (prev.secondsLeft <= 1) {
+          clearInterval(interval);
+          return { ...prev, secondsLeft: 0 };
+        }
+        return { ...prev, secondsLeft: prev.secondsLeft - 1 };
+      });
+    }, 1000);
   }
 
   async function handleUndo() {
@@ -132,12 +110,53 @@ export function CaptureFlow() {
         />
         <button
           type="button"
-          onClick={handleParse}
+          onClick={handleParseText}
           disabled={phase.name === "loading" || !sourceText.trim()}
           className="rounded bg-zinc-800 px-4 py-2 text-sm text-white disabled:opacity-50"
         >
-          {phase.name === "loading" ? "Parsing…" : "Parse"}
+          {phase.name === "loading" ? "Parsing…" : "Parse text"}
         </button>
+
+        <div className="flex items-center gap-2 text-xs text-zinc-500">
+          <div className="h-px flex-1 bg-zinc-800" />
+          or
+          <div className="h-px flex-1 bg-zinc-800" />
+        </div>
+
+        <div className="flex gap-2">
+          <input
+            ref={cameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => handlePhotoSelected(e.target.files?.[0])}
+          />
+          <input
+            ref={libraryInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => handlePhotoSelected(e.target.files?.[0])}
+          />
+          <button
+            type="button"
+            onClick={() => cameraInputRef.current?.click()}
+            disabled={phase.name === "loading"}
+            className="flex-1 rounded border border-zinc-700 px-4 py-2 text-sm disabled:opacity-50"
+          >
+            Take photo
+          </button>
+          <button
+            type="button"
+            onClick={() => libraryInputRef.current?.click()}
+            disabled={phase.name === "loading"}
+            className="flex-1 rounded border border-zinc-700 px-4 py-2 text-sm disabled:opacity-50"
+          >
+            Choose photo
+          </button>
+        </div>
+        {phase.name === "loading" && <p className="text-xs text-zinc-500">Parsing…</p>}
       </div>
     );
   }
@@ -155,18 +174,12 @@ export function CaptureFlow() {
 
   if (phase.name === "review") {
     return (
-      <div className="flex w-full max-w-md flex-col gap-3">
-        {phase.events.map((row) => (
-          <EventCard
-            key={row.id}
-            row={row}
-            onFieldChange={(field, value) => handleFieldChange(row.draftId, row.id, field, value)}
-          />
-        ))}
-        <button type="button" onClick={handleConfirm} className="rounded bg-zinc-800 px-4 py-2 text-sm text-white">
-          Confirm — create {phase.events.length} event{phase.events.length === 1 ? "" : "s"}
-        </button>
-      </div>
+      <ReviewSurface
+        draftId={phase.draftId}
+        initialEvents={phase.events}
+        source={phase.source}
+        onCommitted={handleCommitted}
+      />
     );
   }
 
@@ -187,44 +200,6 @@ export function CaptureFlow() {
           Parse another
         </button>
       )}
-    </div>
-  );
-}
-
-function EventCard({ row, onFieldChange }: { row: DraftEventRow; onFieldChange: (field: string, value: unknown) => void }) {
-  const { event } = row;
-  const timezone = event.timezone;
-
-  return (
-    <div className="flex flex-col gap-2 rounded border border-zinc-700 p-3 text-sm">
-      <input
-        className="bg-transparent font-medium outline-none"
-        defaultValue={event.title.value ?? ""}
-        placeholder="(untitled)"
-        onBlur={(e) => onFieldChange("title", e.target.value || null)}
-      />
-      <div className="flex gap-2 text-zinc-400">
-        <input
-          type="datetime-local"
-          className="bg-transparent outline-none"
-          defaultValue={toLocalInputValue(event.startDateTime.value, timezone)}
-          onBlur={(e) => onFieldChange("startDateTime", fromLocalInputValue(e.target.value, timezone))}
-        />
-        <span>to</span>
-        <input
-          type="datetime-local"
-          className="bg-transparent outline-none"
-          defaultValue={toLocalInputValue(event.endDateTime.value, timezone)}
-          onBlur={(e) => onFieldChange("endDateTime", fromLocalInputValue(e.target.value, timezone))}
-        />
-        {event.endDateTime.inferred && <span className="text-xs italic">(inferred)</span>}
-      </div>
-      <input
-        className="bg-transparent text-zinc-400 outline-none"
-        placeholder="Location"
-        defaultValue={event.location.value ?? ""}
-        onBlur={(e) => onFieldChange("location", e.target.value || null)}
-      />
     </div>
   );
 }
