@@ -22,17 +22,29 @@ export function resolveEvent(event: ParsedEvent): ResolvedEvent {
   const resolved = structuredClone(event);
   const needsInput: ResolvedNeedsInput[] = [];
 
-  if (resolved.endDateTime.value === null && resolved.startDateTime.value !== null && !resolved.isAllDay.value) {
-    const start = DateTime.fromISO(resolved.startDateTime.value);
-    if (start.isValid) {
+  if (resolved.endDateTime.value === null && resolved.startDateTime.value !== null) {
+    if (resolved.isAllDay.value) {
+      // An all-day event with no stated end is unambiguously just that one
+      // day (NFR-9.3.3) -- not a guess worth a needs_input flag.
       resolved.endDateTime = {
-        value: start.plus({ hours: 1 }).toISO({ suppressMilliseconds: true }),
-        confidence: 0.5,
+        value: resolved.startDateTime.value,
+        confidence: resolved.startDateTime.confidence,
         provenance: null,
         inferred: true,
-        inferredFrom: "default 1-hour duration",
+        inferredFrom: "same day as start (no end date given)",
       };
-      needsInput.push({ type: "duration_unknown" });
+    } else {
+      const start = DateTime.fromISO(resolved.startDateTime.value);
+      if (start.isValid) {
+        resolved.endDateTime = {
+          value: start.plus({ hours: 1 }).toISO({ suppressMilliseconds: true }),
+          confidence: 0.5,
+          provenance: null,
+          inferred: true,
+          inferredFrom: "default 1-hour duration",
+        };
+        needsInput.push({ type: "duration_unknown" });
+      }
     }
   }
 

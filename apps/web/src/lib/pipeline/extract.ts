@@ -71,6 +71,7 @@ Rules:
 - Resolve every relative date ("next Thursday", "tomorrow", "the 14th") against the current date above, in the user's timezone. Every startDateTime/endDateTime you output must be an ISO 8601 datetime with an explicit UTC offset consistent with "${timezone}" (or a plain ISO date for all-day events).
 - "off", "—", "N/A", and blank entries are the ABSENCE of an event — do not emit an event for them.
 - If you cannot determine an end time or duration, leave endDateTime null rather than guessing. Do not invent a location or description that isn't in the source — leave it null instead.
+- A deadline ("Homework 1 due 11:59 PM", "submit by Friday", an exam or assignment due date) describes something that must happen by a point in time, not a scheduled block of time. Mark these isAllDay=true for the due date itself rather than inventing a timed block around the due time — but keep the specific due time from being lost by including it in the title (e.g. "Homework 1 (due 11:59 PM)").
 - Set each "*Confidence" to your actual confidence (0-1) in that field.
 - Quote title/location/description values exactly as they appear in the source text where possible (verbatim substrings), since that's how their source highlight is found.
 - conferencingUrl is only a literal Meet/Zoom/Teams/Webex URL found in the text, never invented.

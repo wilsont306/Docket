@@ -17,6 +17,7 @@
     "@ai-sdk/gateway": "^4.0.64",
     "@calendar-auto/core": "workspace:*",
     "@neondatabase/serverless": "^1.1.0",
+    "@vercel/blob": "^2.8.0",
     "ai": "^7.0.79",
     "drizzle-orm": "^0.45.2",
     "luxon": "^3.7.2",
