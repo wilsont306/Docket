@@ -1,6 +1,6 @@
-import { MAX_EVENTS_PER_BATCH } from "@calendar-auto/core";
 import { auth, signIn, signOut } from "@/auth";
 import { listUpcomingEvents } from "@/lib/google-calendar";
+import { CaptureFlow } from "@/components/CaptureFlow";
 
 // M0 exit criterion: sign in with Google, read own calendar.
 export default async function Home() {
@@ -35,9 +35,7 @@ export default async function Home() {
   return (
     <main className="flex min-h-screen flex-col items-center gap-4 p-8">
       <h1 className="text-xl font-semibold">Calendar Auto</h1>
-      <p className="text-sm text-zinc-500">
-        Signed in as {session.user.email} — workspace batch cap: {MAX_EVENTS_PER_BATCH}
-      </p>
+      <p className="text-sm text-zinc-500">Signed in as {session.user.email}</p>
       <form
         action={async () => {
           "use server";
@@ -48,6 +46,10 @@ export default async function Home() {
           Sign out
         </button>
       </form>
+
+      <CaptureFlow />
+
+      <h2 className="mt-6 text-sm font-medium text-zinc-400">Your upcoming events</h2>
       {error ? (
         <p className="text-sm text-red-500">{error}</p>
       ) : events.length === 0 ? (
