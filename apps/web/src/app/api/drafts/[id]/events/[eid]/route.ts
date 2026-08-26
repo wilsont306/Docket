@@ -6,6 +6,7 @@ import { draftEvents, drafts } from "@/db/schema";
 import { getDraftOwnerId } from "@/lib/pipeline/ownership";
 
 const EDITABLE_FIELDS = ["title", "startDateTime", "endDateTime", "isAllDay", "location", "description"] as const;
+const CONFLICT_STATES = ["none", "overlap", "duplicate"] as const;
 
 /**
  * PATCH /api/drafts/:id/events/:eid (§6.5) — edits a single field in place.
@@ -25,10 +26,6 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/drafts/[id
   if (ownerId !== session.user.id) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const body = await request.json().catch(() => null);
-  const field = body?.field;
-  if (!EDITABLE_FIELDS.includes(field)) {
-    return NextResponse.json({ error: `field must be one of ${EDITABLE_FIELDS.join(", ")}` }, { status: 400 });
-  }
 
   const db = getDb();
   const [row] = await db
@@ -38,6 +35,39 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/drafts/[id
     .limit(1);
   if (!row || row.draftId !== draftId) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // FR-4.2.3: delete/restore is a separate concern from field edits -- it
+  // doesn't touch `event` or mark anything user-authoritative.
+  if (typeof body?.deleted === "boolean") {
+    const [updated] = await db
+      .update(draftEvents)
+      .set({ deleted: body.deleted })
+      .where(eq(draftEvents.id, eid))
+      .returning();
+    return NextResponse.json(updated);
+  }
+
+  // FR-4.6.1: conflict state from the review surface's own overlap/duplicate
+  // check against the real calendar -- advisory only (FR-4.6.2), just stored
+  // for display.
+  if (CONFLICT_STATES.includes(body?.conflictState)) {
+    const [updated] = await db
+      .update(draftEvents)
+      .set({ conflictState: body.conflictState })
+      .where(eq(draftEvents.id, eid))
+      .returning();
+    return NextResponse.json(updated);
+  }
+
+  const field = body?.field;
+  if (!EDITABLE_FIELDS.includes(field)) {
+    return NextResponse.json(
+      {
+        error: `Expected { deleted: boolean }, { conflictState: one of ${CONFLICT_STATES.join(", ")} }, or { field: one of ${EDITABLE_FIELDS.join(", ")}, value }`,
+      },
+      { status: 400 },
+    );
   }
 
   const event = row.event as Record<string, unknown>;

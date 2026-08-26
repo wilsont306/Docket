@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { getDb } from "@/db";
-import { draftEvents, drafts, needsInput as needsInputTable } from "@/db/schema";
+import { captures, draftEvents, drafts, needsInput as needsInputTable, parseRuns } from "@/db/schema";
 import { getDraftOwnerId } from "@/lib/pipeline/ownership";
 
 /** GET /api/drafts/:id (§6.5) — draft + events + needs_input for the review surface. */
@@ -22,5 +22,14 @@ export async function GET(_request: Request, ctx: RouteContext<"/api/drafts/[id]
   const events = await db.select().from(draftEvents).where(eq(draftEvents.draftId, id));
   const needsInput = await db.select().from(needsInputTable).where(eq(needsInputTable.draftId, id));
 
-  return NextResponse.json({ ...draft, events, needsInput });
+  // §4.4.1/FR-3.2.5/FR-4.4.2: what the review surface highlights spans/boxes against.
+  const [source] = await db
+    .select({ captureId: captures.id, sourceText: captures.sourceText, kind: captures.kind })
+    .from(drafts)
+    .innerJoin(parseRuns, eq(drafts.parseRunId, parseRuns.id))
+    .innerJoin(captures, eq(parseRuns.captureId, captures.id))
+    .where(eq(drafts.id, id))
+    .limit(1);
+
+  return NextResponse.json({ ...draft, events, needsInput, source });
 }

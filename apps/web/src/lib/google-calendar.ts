@@ -10,6 +10,7 @@ export interface CalendarEvent {
   summary?: string;
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
+  colorId?: string;
 }
 
 /**
@@ -71,6 +72,50 @@ export async function listUpcomingEvents(userId: string, maxResults = 10): Promi
 
   const data = (await response.json()) as { items?: CalendarEvent[] };
   return data.items ?? [];
+}
+
+/** GET /api/calendar/events (§4.1.1) — the real calendar the review pane renders drafts against. */
+export async function listEventsInRange(userId: string, timeMin: string, timeMax: string): Promise<CalendarEvent[]> {
+  const accessToken = await getFreshAccessToken(userId);
+
+  const url = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
+  url.searchParams.set("singleEvents", "true");
+  url.searchParams.set("orderBy", "startTime");
+  url.searchParams.set("timeMin", timeMin);
+  url.searchParams.set("timeMax", timeMax);
+
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!response.ok) {
+    console.error(`Google Calendar events.list (range) failed: ${response.status} ${await response.text()}`);
+    throw new Error("Failed to load your calendar. Please try again.");
+  }
+
+  const data = (await response.json()) as { items?: CalendarEvent[] };
+  return data.items ?? [];
+}
+
+export interface Busy {
+  start: string;
+  end: string;
+}
+
+/** GET /api/calendar/freebusy (§4.6, §6.3 stage 6) — advisory conflict detection, never blocking. */
+export async function queryFreeBusy(userId: string, timeMin: string, timeMax: string): Promise<Busy[]> {
+  const accessToken = await getFreshAccessToken(userId);
+
+  const response = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ timeMin, timeMax, items: [{ id: "primary" }] }),
+  });
+
+  if (!response.ok) {
+    console.error(`Google Calendar freebusy failed: ${response.status} ${await response.text()}`);
+    throw new Error("Failed to check your calendar for conflicts.");
+  }
+
+  const data = (await response.json()) as { calendars?: Record<string, { busy?: Busy[] }> };
+  return data.calendars?.primary?.busy ?? [];
 }
 
 /**
