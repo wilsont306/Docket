@@ -2,8 +2,8 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Calendar Auto",
-    short_name: "Cal Auto",
+    name: "Docket",
+    short_name: "Docket",
     description: "Turn a photo, a paste, or a sentence into a correct calendar event.",
     start_url: "/",
     display: "standalone",
