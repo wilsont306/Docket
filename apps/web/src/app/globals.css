@@ -1,8 +1,74 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: oklch(0.958 0.004 265);
+  --foreground: oklch(0.20 0.014 265);
+  --paper: #fff;
+  --surf: #fff;
+  --sunk: oklch(0.972 0.003 265);
+  --ink: oklch(0.20 0.014 265);
+  --ink2: oklch(0.50 0.012 265);
+  --ink3: oklch(0.63 0.010 265);
+  --rule: oklch(0.915 0.006 265);
+  --rule2: oklch(0.958 0.004 265);
+  --acc: oklch(0.665 0.165 32);
+  --accInk: oklch(0.47 0.15 32);
+  --accWash: oklch(0.972 0.028 40);
+  --accEdge: oklch(0.83 0.09 38);
+  --cool: oklch(0.62 0.18 258);
+  --coolWash: oklch(0.965 0.030 258);
+  --coolInk: oklch(0.44 0.15 260);
+  --coolEdge: oklch(0.86 0.07 258);
+  --violet: oklch(0.60 0.18 290);
+  --violetWash: oklch(0.965 0.030 290);
+  --violetInk: oklch(0.44 0.15 290);
+  --green: oklch(0.60 0.15 145);
+  --greenWash: oklch(0.965 0.030 145);
+  --greenInk: oklch(0.42 0.13 145);
+  --btn: oklch(0.56 0.21 262);
+  --onBtn: #fff;
+  --stripeA: oklch(0.960 0.004 265);
+  --stripeB: oklch(0.905 0.008 265);
+}
+
+/*
+ * Resolved to a concrete "light"/"dark" value before first paint -- server-
+ * rendered from the user's stored preference in layout.tsx when it's
+ * explicit, or by a small blocking inline script (also in layout.tsx) that
+ * reads matchMedia when the preference is "system". Either way `data-theme`
+ * always lands on <html> as "light" or "dark", never "system", so this is
+ * the only override block dark mode needs -- no `prefers-color-scheme`
+ * media query required here.
+ */
+:root[data-theme="dark"] {
+  --background: oklch(0.16 0.010 265);
+  --foreground: oklch(0.92 0.006 265);
+  --paper: oklch(0.16 0.010 265);
+  --surf: oklch(0.21 0.010 265);
+  --sunk: oklch(0.26 0.010 265);
+  --ink: oklch(0.92 0.006 265);
+  --ink2: oklch(0.68 0.010 265);
+  --ink3: oklch(0.52 0.012 265);
+  --rule: oklch(0.32 0.012 265);
+  --rule2: oklch(0.27 0.010 265);
+  --acc: oklch(0.70 0.16 32);
+  --accInk: oklch(0.80 0.13 36);
+  --accWash: oklch(0.28 0.045 35);
+  --accEdge: oklch(0.45 0.10 35);
+  --cool: oklch(0.68 0.16 258);
+  --coolWash: oklch(0.27 0.05 258);
+  --coolInk: oklch(0.80 0.12 258);
+  --coolEdge: oklch(0.44 0.10 258);
+  --violet: oklch(0.68 0.16 290);
+  --violetWash: oklch(0.27 0.05 290);
+  --violetInk: oklch(0.80 0.12 290);
+  --green: oklch(0.68 0.15 145);
+  --greenWash: oklch(0.27 0.05 145);
+  --greenInk: oklch(0.78 0.12 145);
+  --btn: oklch(0.62 0.19 262);
+  --onBtn: #fff;
+  --stripeA: oklch(0.22 0.008 265);
+  --stripeB: oklch(0.30 0.010 265);
 }
 
 @theme inline {
@@ -12,15 +78,166 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), "Plus Jakarta Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * @layer base, not plain global CSS: Tailwind v4's utilities live in
+ * @layer utilities, and per the CSS cascade-layers spec, unlayered rules
+ * beat every layered rule regardless of specificity. Leaving this
+ * unlayered meant `color: inherit` here silently overrode any
+ * `text-[var(--x)]` utility on a button/input/select -- e.g. a solid blue
+ * button's text-[var(--onBtn)] (white) fell back to inherited dark ink,
+ * making the label unreadable against its own background.
+ */
+@layer base {
+  input,
+  textarea,
+  button,
+  select {
+    color: inherit;
+    font: inherit;
+  }
+
+  /* Tailwind's preflight deliberately drops the browser-default pointer
+     cursor on buttons; restore it once here instead of adding
+     `cursor-pointer` to every button in every component. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  /* Untinted placeholder text is a browser default that belongs to no
+     design system, and several inputs (e.g. the composer textarea) set
+     their own text color explicitly, which some browsers otherwise bleed
+     into the placeholder too. */
+  ::placeholder {
+    color: var(--ink2);
+    opacity: 1;
+  }
+}
+
+/*
+ * Deliberately unlayered, same reasoning as the color-inherit fix above but
+ * in the other direction: several components set `outline-none` (a
+ * @layer-utilities class) to replace the browser's default focus ring with
+ * their own hover/border treatment, but a few plain elements ended up with
+ * outline-none and nothing visible to replace it -- keyboard focus became
+ * literally invisible there. An unlayered rule always wins over a layered
+ * utility regardless of source order, so this restores a themed keyboard-
+ * focus ring everywhere, including on top of any component's outline-none.
+ * :focus-visible only fires for keyboard/programmatic focus, not mouse
+ * clicks, so it doesn't add a ring to every button tap.
+ */
+:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
+}
+
+/*
+ * Opt-out for the few elements that already have their own deliberate,
+ * visible focus treatment (a wrapper that recolors its border via
+ * `focus-within`) -- the generic rectangular ring above doesn't know about
+ * that rounded card shape and just sits inside it looking like a foreign
+ * element. Higher specificity than the bare `:focus-visible` above wins
+ * regardless of source order, so this only has to name the exception.
+ */
+.focus-ring-none:focus-visible {
+  outline: none;
+}
+
+/* Same override mechanism, but recoloring instead of removing -- for
+   elements whose own hover accent isn't the app-wide orange, so keyboard
+   focus reads as an extension of that same accent instead of clashing with it. */
+.focus-ring-violet:focus-visible {
+  outline-color: var(--violet);
+}
+
+@keyframes calendar-auto-level {
+  0% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+  100% {
+    transform: scaleY(0.25);
+  }
+}
+
+/*
+ * For lightbox-style modals (ImageSourceViewer, TextSourceModal) whose
+ * `open`/`onClose` is owned by a parent far up the tree -- an `animation`
+ * (not a `transition`) replays on its own every time the element is a fresh
+ * DOM node, which it is here: these modals return null while closed, so
+ * each open is a genuine new mount with nothing extra to wire up. Exit
+ * still happens instantly, same as before; that trade only reads as
+ * unfinished on the small anchored dropdowns (fixed separately), not on a
+ * full-screen overlay the user is already done looking at.
+ */
+@keyframes modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-card-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
+}
+
+/*
+ * Login page product showcase (CaptureShowcase.tsx) -- a single 9s loop
+ * dramatizing capture -> glance -> confirm with no JS. Every element below
+ * shares the same 9s duration and (mostly) zero delay, keyed to the SAME
+ * global percentage scale, so they read as one storyboard:
+ *   0-8%    source text appears
+ *   8-33%   fields extract one at a time (title, time, repeats)
+ *   40-48%  source card hands off to the confirmed calendar
+ *   48-86%  event lands on the week strip, confirm pill appears
+ *   86-100% fades out, then the whole thing loops
+ * A child only needs its OWN appear-and-hold keyframe (opacity 0 -> 1 once);
+ * its exit is inherited for free because CSS opacity compounds through
+ * ancestors, so the parent layer's fade-out at 86-93% hides every child
+ * underneath it without each one repeating that exit.
+ */
+@keyframes showcase-layer-source {
+  0%, 3% { opacity: 0; transform: translateY(6px); }
+  8%, 40% { opacity: 1; transform: translateY(0); }
+  46%, 100% { opacity: 0; transform: translateY(-6px); }
+}
+
+@keyframes showcase-layer-confirmed {
+  0%, 41% { opacity: 0; transform: translateY(6px) scale(0.97); }
+  48%, 86% { opacity: 1; transform: translateY(0) scale(1); }
+  93%, 100% { opacity: 0; transform: translateY(-6px) scale(0.98); }
+}
+
+@keyframes showcase-field-title {
+  0%, 9% { opacity: 0; transform: translateX(-4px); }
+  13%, 100% { opacity: 1; transform: translateX(0); }
+}
+@keyframes showcase-field-time {
+  0%, 17% { opacity: 0; transform: translateX(-4px); }
+  21%, 100% { opacity: 1; transform: translateX(0); }
+}
+@keyframes showcase-field-date {
+  0%, 25% { opacity: 0; transform: translateX(-4px); }
+  29%, 100% { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes showcase-event-block {
+  0%, 49% { opacity: 0; transform: translateY(-4px) scaleY(0.6); }
+  53%, 100% { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+
+@keyframes showcase-confirm-pill {
+  0%, 57% { opacity: 0; transform: translateY(4px); }
+  61%, 100% { opacity: 1; transform: translateY(0); }
 }
