@@ -36,7 +36,7 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/commits/[i
   const failures: Array<{ googleEventId: string; error: string }> = [];
   for (const googleEventId of row.commit.googleEventIds) {
     try {
-      await deleteEvent(session.user.id, googleEventId);
+      await deleteEvent(session.user.id, googleEventId, row.commit.calendarId);
     } catch (error) {
       failures.push({ googleEventId, error: error instanceof Error ? error.message : "Unknown error" });
     }
