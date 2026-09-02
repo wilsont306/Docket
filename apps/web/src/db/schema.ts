@@ -21,12 +21,17 @@ export const captureKindEnum = pgEnum("capture_kind", ["photo", "text", "share",
 export const captureStatusEnum = pgEnum("capture_status", ["pending", "parsing", "ready", "error"]);
 export const draftStateEnum = pgEnum("draft_state", ["pending", "edited", "committed", "discarded"]);
 export const conflictStateEnum = pgEnum("conflict_state", ["none", "overlap", "duplicate"]);
+export const themeEnum = pgEnum("theme", ["system", "light", "dark"]);
 
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
   googleSub: text("google_sub").notNull().unique(),
   email: text("email").notNull(),
+  avatarUrl: text("avatar_url"),
   timezone: text("timezone").notNull(),
+  theme: themeEnum("theme").notNull().default("system"),
+  /** Settings-menu "auto confirm": skip review entirely and commit straight to Google Calendar after parsing. */
+  autoConfirmEnabled: boolean("auto_confirm_enabled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -80,6 +85,8 @@ export const drafts = pgTable("drafts", {
     .notNull()
     .references(() => parseRuns.id, { onDelete: "cascade" }),
   state: draftStateEnum("state").notNull().default("pending"),
+  /** §5.2 `calendar_target`: asked once per batch, remembered on the draft so commit and revert agree on where events live. */
+  calendarId: text("calendar_id").notNull().default("primary"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -116,6 +123,8 @@ export const commits = pgTable("commits", {
   draftId: uuid("draft_id")
     .notNull()
     .references(() => drafts.id, { onDelete: "cascade" }),
+  /** Snapshotted from drafts.calendarId at commit time, so revert always targets the right calendar even if the draft's own field is touched afterward. */
+  calendarId: text("calendar_id").notNull().default("primary"),
   googleEventIds: text("google_event_ids").array().notNull().default([]),
   committedAt: timestamp("committed_at", { withTimezone: true }).defaultNow().notNull(),
   revertedAt: timestamp("reverted_at", { withTimezone: true }),
