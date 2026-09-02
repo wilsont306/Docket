@@ -604,6 +604,7 @@ promise: *the transcription was done for you, correctly.*
 | **M2** | Review surface | Split view, ghost blocks, inline editing, confidence flags, provenance, conflicts, clarifying questions | Full review loop on web; §4 and §5 complete |
 | **M3** | Vision | Photo capture, preprocessing, multi-event grid extraction, bounding-box provenance, bulk operations, own-row selection | Roster photo → correct batch |
 | **M4** | iOS to TestFlight | Expo client, native review UI, camera, EAS Build, **TestFlight internal** | Author + friends running the real app |
+| **M4.5** | Web design pass | Install + run Impeccable (§8.1, skipped when M1-M3 shipped features first); real tokens in `packages/ui-tokens` instead of ad hoc Tailwind; light/dark support (currently dark-only); WCAG AA contrast; apply audit/critique findings to the review surface specifically | Review surface passes `/impeccable critique` with no high-severity findings; light and dark both usable |
 | **M5** | Share + voice | Share Extension (custom dev client + App Groups), audio capture, transcription, offline queue | All four input paths live |
 | **M6** | Hardening | NeMo service, all rails, audit log, Impeccable audit/polish/critique pass, accuracy fixtures | Accuracy targets met; **external TestFlight** |
 
