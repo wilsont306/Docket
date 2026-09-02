@@ -28,6 +28,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           scope: [
             "openid",
             "email",
+            // Without this, Google's ID token/userinfo omits `picture`
+            // entirely (and `name`) -- not just gates it -- so the avatar
+            // shown in the settings menu had nothing to read.
+            "profile",
             "https://www.googleapis.com/auth/calendar.events",
             "https://www.googleapis.com/auth/calendar.readonly",
           ].join(" "),
@@ -44,12 +48,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // zone identifier rather than a naive local time, which "UTC" is.
         const timezone = "UTC";
 
+        // Refreshed on every sign-in (not just the first) so a changed
+        // Google avatar/email is picked up without needing any other code
+        // path -- read straight from the `users` row wherever it's shown,
+        // same as the theme/auto-confirm settings, rather than threading it
+        // through the session/JWT (which only updates right after an OAuth
+        // redirect, not on every request).
         const [user] = await db
           .insert(users)
-          .values({ googleSub: profile.sub, email: profile.email, timezone })
+          .values({ googleSub: profile.sub, email: profile.email, timezone, avatarUrl: profile.picture ?? null })
           .onConflictDoUpdate({
             target: users.googleSub,
-            set: { email: profile.email },
+            set: { email: profile.email, avatarUrl: profile.picture ?? null },
           })
           .returning();
 
