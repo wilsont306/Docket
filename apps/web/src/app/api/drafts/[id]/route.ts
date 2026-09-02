@@ -33,3 +33,25 @@ export async function GET(_request: Request, ctx: RouteContext<"/api/drafts/[id]
 
   return NextResponse.json({ ...draft, events, needsInput, source });
 }
+
+/** PATCH /api/drafts/:id (§5.2 `calendar_target`) — batch-level, asked/answered once, not per event. */
+export async function PATCH(request: Request, ctx: RouteContext<"/api/drafts/[id]">) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { id } = await ctx.params;
+  const ownerId = await getDraftOwnerId(id);
+  if (!ownerId) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (ownerId !== session.user.id) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+  const body = await request.json().catch(() => null);
+  if (typeof body?.calendarId !== "string" || !body.calendarId) {
+    return NextResponse.json({ error: "Expected { calendarId: string }" }, { status: 400 });
+  }
+
+  const db = getDb();
+  const [updated] = await db.update(drafts).set({ calendarId: body.calendarId }).where(eq(drafts.id, id)).returning();
+  return NextResponse.json(updated);
+}

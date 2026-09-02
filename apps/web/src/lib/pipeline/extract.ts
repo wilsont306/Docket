@@ -1,7 +1,9 @@
 import { generateObject } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
-import type { ParsedEvent, Field } from "@calendar-auto/core";
+import { buildRecurrence, type ParsedEvent, type Field } from "@calendar-auto/core";
+
+const RECURRENCE_DAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] as const;
 
 /**
  * Pipeline stage 4 (§6.3). Claude Sonnet 5 is the PRD's choice for plain
@@ -28,8 +30,11 @@ const extractionModel = process.env.ANTHROPIC_API_KEY
  * confidences only; provenance spans are computed deterministically in
  * `toParsedEvent` below by searching for the returned value in the source
  * text, which is also more reliable than trusting a model's character-offset
- * arithmetic. Recurrence extraction is deferred past M1 (§12.5 already
- * flags recurrence as the highest-risk field, and its review UI is M2 scope).
+ * arithmetic. Recurrence is extracted as a small structured description
+ * (frequency/days/until) rather than a raw RRULE string -- §12.5 calls
+ * recurrence the highest-risk field, so the actual RRULE syntax is always
+ * built deterministically (packages/core's `buildRecurrence`), never
+ * trusted verbatim from the model.
  */
 const ExtractionEventSchema = z.object({
   title: z.string().nullable(),
@@ -45,6 +50,16 @@ const ExtractionEventSchema = z.object({
   descriptionConfidence: z.number().min(0).max(1),
   /** A recognized Meet/Zoom/Teams/Webex link in the source, if any (FR-5.4.1). */
   conferencingUrl: z.string().nullable(),
+  /** False for personal/solo activities where "where is this?" wouldn't make sense (sleeping, a workout, a reminder) -- see buildPrompt. Not part of ParsedEvent; only steers whether resolve.ts asks a location_missing question. */
+  locationExpected: z.boolean(),
+  /** Null when the source doesn't describe a repeating pattern. */
+  recurrenceFrequency: z.enum(["daily", "weekly", "monthly", "yearly"]).nullable(),
+  /** Only meaningful when recurrenceFrequency is "weekly"; null means "same day as the event's own start date". */
+  recurrenceDays: z.array(z.enum(RECURRENCE_DAYS)).nullable(),
+  /** ISO date, only if the source stated an explicit end ("until Dec 12", "through the semester"). */
+  recurrenceUntil: z.string().nullable(),
+  /** Every N units of recurrenceFrequency -- 2 for "every other day"/"biweekly", null (meaning 1) for a plain "every day"/"weekly". */
+  recurrenceInterval: z.number().int().min(1).nullable(),
 });
 const ExtractionBatchSchema = z.array(ExtractionEventSchema);
 type ExtractionEvent = z.infer<typeof ExtractionEventSchema>;
@@ -71,10 +86,13 @@ Rules:
 - Resolve every relative date ("next Thursday", "tomorrow", "the 14th") against the current date above, in the user's timezone. Every startDateTime/endDateTime you output must be an ISO 8601 datetime with an explicit UTC offset consistent with "${timezone}" (or a plain ISO date for all-day events).
 - "off", "—", "N/A", and blank entries are the ABSENCE of an event — do not emit an event for them.
 - If you cannot determine an end time or duration, leave endDateTime null rather than guessing. Do not invent a location or description that isn't in the source — leave it null instead.
+- If the source explicitly describes the event itself as virtual/online/remote (e.g. "virtual meeting", "online class", "remote standup") but gives no specific address, room, or URL, set location to the literal word describing that (e.g. "Virtual") instead of leaving it null — the source has already told you where it is, even without a precise address, so this isn't a location_missing case.
 - A deadline ("Homework 1 due 11:59 PM", "submit by Friday", an exam or assignment due date) describes something that must happen by a point in time, not a scheduled block of time. Mark these isAllDay=true for the due date itself rather than inventing a timed block around the due time — but keep the specific due time from being lost by including it in the title (e.g. "Homework 1 (due 11:59 PM)").
 - Set each "*Confidence" to your actual confidence (0-1) in that field.
 - Quote title/location/description values exactly as they appear in the source text where possible (verbatim substrings), since that's how their source highlight is found.
 - conferencingUrl is only a literal Meet/Zoom/Teams/Webex URL found in the text, never invented.
+- locationExpected is false for a plain note, task, or reminder, and for personal/solo activities where a "where is this?" follow-up question wouldn't make sense -- sleeping, a workout or run, screen time, a break. It's true for anything else that plausibly happens somewhere, even if that place wasn't stated in the text (a meeting, class, appointment, meal with someone, or call with a named person).
+- recurrenceFrequency is only set when the text clearly describes a repeating event ("every Tuesday", "weekly meeting", "MWF lecture", "daily standup", "annual review", "monthly 1:1") -- leave it null for a one-time event, and null rather than guessing if it's ambiguous whether something repeats at all. A yearly-recurring event ("annual", "anniversary", "every year") is recurrenceFrequency "yearly", not a one-time all-day event. recurrenceDays is the set of weekdays it repeats on (e.g. ["MO","WE","FR"] for "MWF") when recurrenceFrequency is "weekly" and specific days were stated; leave it null if only one day is implied (the event's own start date) or the days weren't specified. recurrenceUntil is the ISO date it stops repeating, only if an explicit end was stated ("until Dec 12", "through the end of the semester" -- infer the actual date only if the semester end date is otherwise given in the text, never invent one). recurrenceInterval is how many units of recurrenceFrequency apart each occurrence is -- 2 for "every other day"/"every other week"/"biweekly"/"every 2 weeks", 3 for "every third month", and so on; leave it null for a plain "every day"/"every Tuesday" (which means 1, not "no recurrence"). Never force an interval-based pattern into recurrenceFrequency "daily"/"weekly" without setting recurrenceInterval -- "every other day" is daily with interval 2, not plain daily. An ordinal-weekday-of-month pattern ("the first Monday of every month", "the last Friday of the month", "the second Tuesday") cannot be represented by this schema at all (there's no way to express "which occurrence of that weekday") -- leave recurrenceFrequency null for these rather than emitting a plain "monthly" recurrence, which would silently repeat on the wrong days starting the second month.
 
 Source text:
 """
@@ -114,8 +132,11 @@ function toParsedEvent(extracted: ExtractionEvent, sourceText: string, timezone:
     isAllDay: { value: extracted.isAllDay, confidence: 0.85, provenance: null, inferred: false, inferredFrom: null },
     timezone,
     location: toTextField(extracted.location, extracted.locationConfidence, sourceText),
+    locationApplicable: extracted.locationExpected,
     description: toTextField(extracted.description, extracted.descriptionConfidence, sourceText),
-    recurrence: null,
+    recurrence: extracted.recurrenceFrequency
+      ? buildRecurrence(extracted.recurrenceFrequency, extracted.recurrenceDays, extracted.recurrenceUntil, extracted.recurrenceInterval)
+      : null,
     conferencing: extracted.conferencingUrl
       ? { provider: guessConferencingProvider(extracted.conferencingUrl), url: extracted.conferencingUrl, requestGoogleMeetLink: false }
       : null,

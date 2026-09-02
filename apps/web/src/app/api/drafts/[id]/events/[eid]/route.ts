@@ -6,6 +6,8 @@ import { draftEvents, drafts } from "@/db/schema";
 import { getDraftOwnerId } from "@/lib/pipeline/ownership";
 
 const EDITABLE_FIELDS = ["title", "startDateTime", "endDateTime", "isAllDay", "location", "description"] as const;
+/** Not a Field<T> like the others -- {rrule, plainLanguage, confidence} or null, set directly rather than wrapped. */
+const STRUCTURED_FIELDS = ["recurrence"] as const;
 const CONFLICT_STATES = ["none", "overlap", "duplicate"] as const;
 
 /**
@@ -61,25 +63,30 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/drafts/[id
   }
 
   const field = body?.field;
-  if (!EDITABLE_FIELDS.includes(field)) {
+  if (!EDITABLE_FIELDS.includes(field) && !STRUCTURED_FIELDS.includes(field)) {
     return NextResponse.json(
       {
-        error: `Expected { deleted: boolean }, { conflictState: one of ${CONFLICT_STATES.join(", ")} }, or { field: one of ${EDITABLE_FIELDS.join(", ")}, value }`,
+        error: `Expected { deleted: boolean }, { conflictState: one of ${CONFLICT_STATES.join(", ")} }, or { field: one of ${[...EDITABLE_FIELDS, ...STRUCTURED_FIELDS].join(", ")}, value }`,
       },
       { status: 400 },
     );
   }
 
   const event = row.event as Record<string, unknown>;
-  const currentFieldValue = event[field] as Record<string, unknown>;
-  event[field] = {
-    ...currentFieldValue,
-    value: body.value,
-    confidence: 1,
-    provenance: null,
-    inferred: false,
-    inferredFrom: null,
-  };
+  if (STRUCTURED_FIELDS.includes(field)) {
+    // {rrule, plainLanguage, confidence} or null -- built client-side, set as-is rather than wrapped in the {value, confidence, provenance, ...} shape every other field uses.
+    event[field] = body.value ?? null;
+  } else {
+    const currentFieldValue = event[field] as Record<string, unknown>;
+    event[field] = {
+      ...currentFieldValue,
+      value: body.value,
+      confidence: 1,
+      provenance: null,
+      inferred: false,
+      inferredFrom: null,
+    };
+  }
 
   const userEditedFields = row.userEditedFields.includes(field)
     ? row.userEditedFields

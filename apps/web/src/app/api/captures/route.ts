@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { PipelineError, runPhotoCapturePipeline, runTextCapturePipeline } from "@/lib/pipeline/run";
+import { PersistError } from "@/lib/pipeline/persist";
 import { ValidationError, isValidIanaZone } from "@calendar-auto/core";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
-/** POST /api/captures (§6.5) — text (FR-3.2) and photo (FR-3.1); share/voice arrive in M5. */
+/** POST /api/captures (§6.5) — text (FR-3.2) and photo (FR-3.1); share/voice arrive in M5. An optional draftId appends to that still-open draft instead of starting a new one ("Add another"). */
 export async function POST(request: Request) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -19,6 +20,8 @@ export async function POST(request: Request) {
     const file = formData.get("file");
     const timezoneRaw = formData.get("timezone");
     const timezone = typeof timezoneRaw === "string" && isValidIanaZone(timezoneRaw) ? timezoneRaw : undefined;
+    const draftIdRaw = formData.get("draftId");
+    const draftId = typeof draftIdRaw === "string" && draftIdRaw ? draftIdRaw : undefined;
 
     if (!(file instanceof File) || !file.type.startsWith("image/")) {
       return NextResponse.json({ error: "Expected a multipart 'file' field with an image" }, { status: 400 });
@@ -28,7 +31,7 @@ export async function POST(request: Request) {
     }
 
     try {
-      const result = await runPhotoCapturePipeline(session.user.id, file, file.type, timezone);
+      const result = await runPhotoCapturePipeline(session.user.id, file, file.type, timezone, draftId);
       return NextResponse.json(result, { status: 201 });
     } catch (error) {
       return handlePipelineError(error);
@@ -44,9 +47,10 @@ export async function POST(request: Request) {
   // capture-time zone. The client sends its detected IANA zone; a missing
   // or invalid value falls back to the user's stored timezone in the pipeline.
   const timezone = typeof body.timezone === "string" && isValidIanaZone(body.timezone) ? body.timezone : undefined;
+  const draftId = typeof body.draftId === "string" && body.draftId ? body.draftId : undefined;
 
   try {
-    const result = await runTextCapturePipeline(session.user.id, body.sourceText, timezone);
+    const result = await runTextCapturePipeline(session.user.id, body.sourceText, timezone, draftId);
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
     return handlePipelineError(error);
@@ -56,6 +60,9 @@ export async function POST(request: Request) {
 function handlePipelineError(error: unknown) {
   if (error instanceof ValidationError) {
     return NextResponse.json({ error: error.message, code: error.code }, { status: 422 });
+  }
+  if (error instanceof PersistError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof PipelineError) {
     return NextResponse.json({ error: error.message }, { status: 400 });

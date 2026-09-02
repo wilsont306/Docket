@@ -11,6 +11,8 @@ export interface CalendarEvent {
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
   colorId?: string;
+  /** Which of the user's calendars this came from -- lets the UI color/attribute a merged multi-calendar fetch back to its source. */
+  calendarId: string;
 }
 
 /**
@@ -70,28 +72,48 @@ export async function listUpcomingEvents(userId: string, maxResults = 10): Promi
     throw new Error("Failed to load your calendar. Please try again.");
   }
 
-  const data = (await response.json()) as { items?: CalendarEvent[] };
-  return data.items ?? [];
+  const data = (await response.json()) as { items?: Array<Omit<CalendarEvent, "calendarId">> };
+  return (data.items ?? []).map((item) => ({ ...item, calendarId: "primary" }));
 }
 
-/** GET /api/calendar/events (§4.1.1) — the real calendar the review pane renders drafts against. */
-export async function listEventsInRange(userId: string, timeMin: string, timeMax: string): Promise<CalendarEvent[]> {
+/**
+ * GET /api/calendar/events (§4.1.1) — the real calendar(s) the review pane
+ * renders drafts against. Fetches every requested calendar's events in
+ * parallel and tags each with its source `calendarId`, so a merged
+ * multi-calendar view (the "My calendars" checklist) can still color/attribute
+ * events back to where they came from. A calendar that fails (e.g. access
+ * revoked mid-session) is dropped rather than failing the whole batch --
+ * conflict display is advisory (§4.6.2), so a partial result beats none.
+ */
+export async function listEventsInRange(userId: string, timeMin: string, timeMax: string, calendarIds: string[] = ["primary"]): Promise<CalendarEvent[]> {
   const accessToken = await getFreshAccessToken(userId);
 
-  const url = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
-  url.searchParams.set("singleEvents", "true");
-  url.searchParams.set("orderBy", "startTime");
-  url.searchParams.set("timeMin", timeMin);
-  url.searchParams.set("timeMax", timeMax);
+  const results = await Promise.allSettled(
+    calendarIds.map(async (calendarId) => {
+      const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`);
+      url.searchParams.set("singleEvents", "true");
+      url.searchParams.set("orderBy", "startTime");
+      url.searchParams.set("timeMin", timeMin);
+      url.searchParams.set("timeMax", timeMax);
 
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!response.ok) {
-    console.error(`Google Calendar events.list (range) failed: ${response.status} ${await response.text()}`);
-    throw new Error("Failed to load your calendar. Please try again.");
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!response.ok) {
+        throw new Error(`${response.status} ${await response.text()}`);
+      }
+      const data = (await response.json()) as { items?: Array<Omit<CalendarEvent, "calendarId">> };
+      return (data.items ?? []).map((item) => ({ ...item, calendarId }));
+    }),
+  );
+
+  const events: CalendarEvent[] = [];
+  for (const [i, result] of results.entries()) {
+    if (result.status === "fulfilled") {
+      events.push(...result.value);
+    } else {
+      console.error(`Google Calendar events.list (range) failed for ${calendarIds[i]}: ${result.reason}`);
+    }
   }
-
-  const data = (await response.json()) as { items?: CalendarEvent[] };
-  return data.items ?? [];
+  return events;
 }
 
 export interface Busy {
@@ -116,6 +138,46 @@ export async function queryFreeBusy(userId: string, timeMin: string, timeMax: st
 
   const data = (await response.json()) as { calendars?: Record<string, { busy?: Busy[] }> };
   return data.calendars?.primary?.busy ?? [];
+}
+
+export interface CalendarListEntry {
+  id: string;
+  summary: string;
+  primary: boolean;
+  backgroundColor?: string;
+  /** Whether the user can write events into it -- Birthdays/Tasks/subscribed calendars are read-only even when checked for display. */
+  writable: boolean;
+}
+
+/**
+ * GET /api/calendars (§6.5, §5.2 `calendar_target`, and the "My calendars"
+ * visibility checklist) — every calendar in the user's list, not just
+ * writable ones. The commit-target picker filters this down to `writable`
+ * client-side; the visibility checklist shows all of it, same as Google
+ * Calendar's own sidebar.
+ */
+export async function listCalendars(userId: string): Promise<CalendarListEntry[]> {
+  const accessToken = await getFreshAccessToken(userId);
+
+  const response = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok) {
+    console.error(`Google Calendar calendarList.list failed: ${response.status} ${await response.text()}`);
+    throw new Error("Failed to load your calendars.");
+  }
+
+  const data = (await response.json()) as {
+    items?: Array<{ id: string; summary: string; primary?: boolean; accessRole: string; backgroundColor?: string }>;
+  };
+  return (data.items ?? []).map((cal) => ({
+    id: cal.id,
+    summary: cal.summary,
+    primary: cal.primary ?? false,
+    backgroundColor: cal.backgroundColor,
+    writable: cal.accessRole === "owner" || cal.accessRole === "writer",
+  }));
 }
 
 /**
@@ -166,11 +228,11 @@ function toGoogleEventBody(event: ParsedEvent, commitId: string): Record<string,
 }
 
 /** POST /api/drafts/:id/commit (§6.5, §6.3 stage 9) — the only mutation in the system. */
-export async function insertEvent(userId: string, event: ParsedEvent, commitId: string): Promise<string> {
+export async function insertEvent(userId: string, event: ParsedEvent, commitId: string, calendarId = "primary"): Promise<string> {
   const accessToken = await getFreshAccessToken(userId);
   const body = toGoogleEventBody(event, commitId);
 
-  const url = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
+  const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`);
   if (event.conferencing?.requestGoogleMeetLink) {
     url.searchParams.set("conferenceDataVersion", "1");
   }
@@ -191,10 +253,10 @@ export async function insertEvent(userId: string, event: ParsedEvent, commitId: 
 }
 
 /** POST /api/commits/:id/revert (FR-4.7.4/FR-4.8.2). */
-export async function deleteEvent(userId: string, googleEventId: string): Promise<void> {
+export async function deleteEvent(userId: string, googleEventId: string, calendarId = "primary"): Promise<void> {
   const accessToken = await getFreshAccessToken(userId);
   const response = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${googleEventId}`,
+    `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${googleEventId}`,
     { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } },
   );
 

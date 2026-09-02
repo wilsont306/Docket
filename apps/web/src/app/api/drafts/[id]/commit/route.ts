@@ -73,7 +73,10 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/drafts/[id
     throw error;
   }
 
-  const [commitRow] = await db.insert(commits).values({ draftId, googleEventIds: [] }).returning();
+  const [commitRow] = await db
+    .insert(commits)
+    .values({ draftId, calendarId: claimed.calendarId, googleEventIds: [] })
+    .returning();
   const googleEventIds: string[] = [];
   const failures: Array<{ draftEventId: string; error: string }> = [];
 
@@ -81,7 +84,7 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/drafts/[id
   // failure partway through doesn't lose track of what already landed.
   for (const row of liveRows) {
     try {
-      const googleEventId = await insertEvent(session.user.id, row.event as ParsedEvent, commitRow.id);
+      const googleEventId = await insertEvent(session.user.id, row.event as ParsedEvent, commitRow.id, claimed.calendarId);
       googleEventIds.push(googleEventId);
       await db.update(commits).set({ googleEventIds }).where(eq(commits.id, commitRow.id));
     } catch (error) {

@@ -23,6 +23,8 @@ export const ParsedEventSchema = z.object({
    * zone (NFR-9.3.4), never a naive local time (NFR-9.3.1). */
   timezone: z.string(),
   location: fieldSchema(z.string()),
+  /** False for a note/task/personal activity where a location doesn't apply -- steers resolve.ts away from asking a location_missing question, and the review UI disables the location field instead of flagging it as missing. */
+  locationApplicable: z.boolean().default(true),
   description: fieldSchema(z.string()),
   recurrence: RecurrenceSchema.nullable(),
   conferencing: ConferencingSchema.nullable(),
