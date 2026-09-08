@@ -12,6 +12,7 @@ import { CalendarChecklist } from "./CalendarChecklist";
 import { CalendarViewSwitcher } from "./CalendarViewSwitcher";
 import { MonthGrid } from "./MonthGrid";
 import { YearGrid } from "./YearGrid";
+import { ImageLightbox } from "./ImageLightbox";
 import { viewRange, shiftAnchor, viewLabel, type CalendarViewMode } from "@/lib/calendar-view";
 import type { CalendarEvent, CalendarListEntry } from "@/lib/google-calendar";
 import { preprocessImage } from "@/lib/image-preprocess";
@@ -40,6 +41,14 @@ interface HistoryEntry {
   draftId?: string;
   /** Set on failure -- shown inline on the bubble instead of navigating to a separate error page. */
   errorMessage?: string;
+  /**
+   * Photo captures only: an object URL for the image that was sent, so the
+   * chat keeps showing the picture (clickable, full size) instead of
+   * collapsing it to its filename the moment it leaves the composer.
+   * Session-lived and revoked on unmount -- reopening the app doesn't
+   * reconstruct these, the stored capture behind the draft does.
+   */
+  previewUrl?: string;
 }
 
 /** A parsed event with neither a stated location nor a detected virtual-meeting link (§5.2 `location_missing`). */
@@ -140,6 +149,14 @@ export function CaptureFlow({
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const libraryInputRef = useRef<HTMLInputElement>(null);
   const stageTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  // Object URLs handed to the chat log outlive the composer chip that made
+  // them, so they're released here rather than by whichever bubble happens
+  // to be showing one.
+  const historyPreviewUrlsRef = useRef<string[]>([]);
+  useEffect(() => {
+    const urls = historyPreviewUrlsRef.current;
+    return () => urls.forEach(URL.revokeObjectURL);
+  }, []);
 
   const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
   const [viewMode, setViewMode] = useState<CalendarViewMode>("week");
@@ -222,9 +239,9 @@ export function CaptureFlow({
     stageTimersRef.current = [];
   }
 
-  function pushHistory(kind: CaptureTab, label: string): string {
+  function pushHistory(kind: CaptureTab, label: string, previewUrl?: string): string {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setHistory((prev) => [...prev, { id, kind, label, state: "parsing" }]);
+    setHistory((prev) => [...prev, { id, kind, label, state: "parsing", previewUrl }]);
     return id;
   }
 
@@ -339,7 +356,11 @@ export function CaptureFlow({
     const draftId = appendToDraftId ?? undefined;
     setAppendToDraftId(null);
     if (attachedPhoto) {
-      const historyId = pushHistory("photo", attachedPhoto.name);
+      // The chip's own preview URL dies with the chip on send, so the chat
+      // log gets its own handle on the same bytes.
+      const previewUrl = URL.createObjectURL(attachedPhoto);
+      historyPreviewUrlsRef.current.push(previewUrl);
+      const historyId = pushHistory("photo", attachedPhoto.name, previewUrl);
       const file = attachedPhoto;
       setAttachedPhoto(null);
       setComposerText("");
@@ -947,6 +968,7 @@ function CaptureScreen({
 function HistoryBubble({ entry, onReopen }: { entry: HistoryEntry; onReopen: (draftId: string) => void }) {
   const kindLabel = { photo: "Photo", text: "Text", share: "Shared screenshot", voice: "Dictation" }[entry.kind];
   const reopenable = entry.state === "ready" && !!entry.draftId;
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   const content = (
     <>
@@ -973,21 +995,47 @@ function HistoryBubble({ entry, onReopen }: { entry: HistoryEntry; onReopen: (dr
     </>
   );
 
-  if (reopenable) {
-    return (
+  // The thumbnail is its own click target beside the bubble's body rather
+  // than inside it -- a reopenable bubble is already a button, and a button
+  // can't nest another one.
+  const thumbnail = entry.previewUrl && (
+    <>
       <button
         type="button"
-        onClick={() => onReopen(entry.draftId!)}
-        className="flex flex-col self-end rounded-2xl border border-[var(--rule)] bg-[var(--surf)] px-4 py-2.5 text-left transition-colors hover:border-[var(--acc)] hover:bg-[var(--accWash)] lg:max-w-[80%]"
+        onClick={() => setViewerOpen(true)}
+        className="group relative block h-11 w-11 shrink-0 overflow-hidden rounded-lg border border-[var(--rule)]"
+        aria-label={`View ${entry.label} full size`}
       >
-        {content}
+        {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not a static asset */}
+        <img src={entry.previewUrl} alt="" className="h-full w-full object-cover" />
+        <span className="absolute inset-0 flex items-center justify-center bg-black/45 text-white opacity-0 transition-opacity group-hover:opacity-100">
+          <ExpandIcon />
+        </span>
       </button>
-    );
-  }
+      <ImageLightbox src={entry.previewUrl} alt={entry.label} open={viewerOpen} onClose={() => setViewerOpen(false)} />
+    </>
+  );
+
+  const body = reopenable ? (
+    <button
+      type="button"
+      onClick={() => onReopen(entry.draftId!)}
+      className="-m-1 flex min-w-0 flex-1 flex-col rounded-xl p-1 text-left transition-colors hover:bg-[var(--accWash)]"
+    >
+      {content}
+    </button>
+  ) : (
+    <div className="flex min-w-0 flex-1 flex-col">{content}</div>
+  );
 
   return (
-    <div className="flex flex-col self-end rounded-2xl border border-[var(--rule)] bg-[var(--surf)] px-4 py-2.5 lg:max-w-[80%]">
-      {content}
+    <div
+      className={`flex items-start gap-2.5 self-end rounded-2xl border bg-[var(--surf)] px-4 py-2.5 lg:max-w-[80%] ${
+        reopenable ? "border-[var(--rule)] transition-colors hover:border-[var(--acc)]" : "border-[var(--rule)]"
+      }`}
+    >
+      {thumbnail}
+      {body}
     </div>
   );
 }
@@ -1062,27 +1110,43 @@ function LocationQuestionBubble({ question, onAnswer }: { question: LocationQues
 
 function PhotoAttachmentChip({ file, onRemove }: { file: File; onRemove: () => void }) {
   const previewUrl = useMemo(() => URL.createObjectURL(file), [file]);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   useEffect(() => {
     return () => URL.revokeObjectURL(previewUrl);
   }, [previewUrl]);
 
   return (
-    <div className="mb-2 flex w-fit items-center gap-2.5 rounded-xl border border-[var(--rule)] bg-[var(--surf)] py-1.5 pl-1.5 pr-3">
-      {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not a static asset */}
-      <img src={previewUrl} alt="" className="h-9 w-9 rounded-lg object-cover" />
-      <div className="min-w-0">
-        <div className="truncate text-[12.5px] font-medium">{file.name}</div>
-        <div className="text-[11px] text-[var(--ink2)]">{Math.max(1, Math.round(file.size / 1024))} KB</div>
-      </div>
+    <div className="mb-2 flex w-fit items-center gap-1 rounded-xl border border-[var(--rule)] bg-[var(--surf)] py-1.5 pl-1.5 pr-2">
+      {/* Everything but the remove button opens the photo: a 36px thumbnail
+          isn't enough to check you attached the right picture. */}
+      <button
+        type="button"
+        onClick={() => setViewerOpen(true)}
+        className="group flex min-w-0 items-center gap-2.5 rounded-lg pr-2 text-left transition-colors hover:bg-[var(--sunk)]"
+        aria-label={`View ${file.name} full size`}
+      >
+        <span className="relative block h-9 w-9 shrink-0 overflow-hidden rounded-lg">
+          {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview, not a static asset */}
+          <img src={previewUrl} alt="" className="h-9 w-9 object-cover" />
+          <span className="absolute inset-0 flex items-center justify-center bg-black/45 text-white opacity-0 transition-opacity group-hover:opacity-100">
+            <ExpandIcon />
+          </span>
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-[12.5px] font-medium">{file.name}</span>
+          <span className="block text-[11px] text-[var(--ink2)]">{Math.max(1, Math.round(file.size / 1024))} KB</span>
+        </span>
+      </button>
       <button
         type="button"
         onClick={onRemove}
-        className="ml-1 flex h-6 w-6 items-center justify-center rounded-md text-[13px] text-[var(--ink3)] transition-colors hover:bg-[var(--sunk)] hover:text-[var(--ink)]"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[13px] text-[var(--ink3)] transition-colors hover:bg-[var(--sunk)] hover:text-[var(--ink)]"
         aria-label="Remove photo"
       >
         ✕
       </button>
+      <ImageLightbox src={previewUrl} alt={file.name} open={viewerOpen} onClose={() => setViewerOpen(false)} />
     </div>
   );
 }
@@ -1118,6 +1182,15 @@ function FileTextIcon() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" />
       <path d="M14 2v5h5M8 13h8M8 17h8M8 9h3" />
+    </svg>
+  );
+}
+
+/** Sits over a thumbnail on hover -- the "this opens bigger" affordance. */
+function ExpandIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
     </svg>
   );
 }
