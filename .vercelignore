@@ -1,0 +1,34 @@
+# Vercel uses this instead of .gitignore when it's present, and unlike git it
+# doesn't apply nested .gitignore files (apps/web/.gitignore's /.next/ never
+# reached it). Local build caches are the reason this file exists: a local
+# `turbo run build` leaves ~300MB in .turbo/cache and ~900MB in
+# apps/web/.next, and the upload carried them all the way to Vercel's 100MB
+# per-file limit before failing. Everything here is either rebuilt on Vercel
+# or has no business in a deployment.
+
+# dependencies + build output (Vercel installs and builds these itself)
+node_modules
+.pnpm-store
+.next
+.turbo
+dist
+*.tsbuildinfo
+.expo
+
+# secrets -- never upload, they're configured in the project's env settings
+.env
+.env.local
+.env.*.local
+
+# local-only tooling and scratch state
+.git
+.claude
+.impeccable
+.vercel
+
+# design sources and references, not application assets
+Images
+*.zip
+
+# os / editor
+.DS_Store
