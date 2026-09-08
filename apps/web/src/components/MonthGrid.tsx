@@ -6,7 +6,11 @@ import { resolveEventColor } from "@/lib/event-color";
 import type { DraftBlock } from "./WeekCalendar";
 
 const MAX_VISIBLE_PER_DAY = 3;
-const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+// Monday-first, matching Luxon's `startOf("week")` -- which is what builds
+// the grid below (and the week view's own columns). The old Sunday-first
+// labels sat above Monday-first columns, so every date in the month read one
+// column off from the weekday printed over it.
+const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function isAllDayRealEvent(e: CalendarEvent): boolean {
   return !e.start?.dateTime && !!e.start?.date;
@@ -73,6 +77,9 @@ export function MonthGrid({
         const dayDrafts: DayItem[] = draftBlocks
           .filter((d) => d.start.hasSame(day, "day"))
           .map((d) => ({ key: `draft-${d.id}`, label: d.title, time: d.allDay ? null : d.start.toFormat("h:mm a"), color: null }));
+        // Same idea as the week view's full-column blob, at this zoom: an
+        // all-day draft claims the whole cell rather than one line of it.
+        const hasAllDayDraft = draftBlocks.some((d) => d.allDay && d.start.hasSame(day, "day"));
 
         const items = [...dayReal, ...dayDrafts];
         const visible = items.slice(0, MAX_VISIBLE_PER_DAY);
@@ -83,9 +90,15 @@ export function MonthGrid({
             type="button"
             key={day.toISODate()}
             onClick={() => onSelectDay(day)}
-            className={`flex min-h-0 flex-col items-stretch gap-0.5 overflow-hidden border-b border-l border-[var(--rule2)] p-1 text-left transition-colors hover:bg-[var(--sunk)] ${
-              inMonth ? "bg-[var(--surf)]" : "bg-[var(--sunk)]"
-            }`}
+            className="flex min-h-0 flex-col items-stretch gap-0.5 overflow-hidden border-b border-l border-[var(--rule2)] p-1 text-left transition-colors hover:brightness-95"
+            style={{
+              background: hasAllDayDraft
+                ? "color-mix(in oklch, var(--accWash) 62%, transparent)"
+                : inMonth
+                  ? "var(--surf)"
+                  : "var(--sunk)",
+              ...(hasAllDayDraft ? { boxShadow: "inset 0 0 0 1.5px var(--accEdge)" } : {}),
+            }}
           >
             <span
               className={`self-start rounded-full px-1.5 text-[11px] font-semibold ${

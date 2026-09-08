@@ -199,8 +199,15 @@ function toGoogleEventBody(event: ParsedEvent, commitId: string): Record<string,
   if (event.location.value) body.location = event.location.value;
 
   if (isAllDay) {
-    const startDate = event.startDateTime.value!;
-    const endDate = event.endDateTime.value ?? startDate;
+    // Google's all-day fields take a bare yyyy-MM-dd and reject a full
+    // datetime, but an all-day event can still be *holding* one -- the model
+    // may emit an offset datetime, and an all-day event switched over from a
+    // timed one keeps whatever it had. Read every value in the event's own
+    // zone before taking its date, so a late-evening timestamp doesn't land
+    // on the following day.
+    const toDate = (iso: string) => DateTime.fromISO(iso, { zone: event.timezone }).toISODate() ?? iso;
+    const startDate = toDate(event.startDateTime.value!);
+    const endDate = event.endDateTime.value ? toDate(event.endDateTime.value) : startDate;
     // Google's all-day end date is exclusive; ours is the last inclusive day.
     body.start = { date: startDate };
     body.end = { date: DateTime.fromISO(endDate).plus({ days: 1 }).toISODate() };

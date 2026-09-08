@@ -29,6 +29,11 @@ export interface DraftBlock {
   conflict: "none" | "overlap" | "duplicate";
 }
 
+/** True for every day an all-day draft covers, not just its first -- a multi-day one claims each column it spans. */
+function coversDay(block: DraftBlock, day: DateTime): boolean {
+  return day.startOf("day") >= block.start.startOf("day") && day.startOf("day") <= block.end.startOf("day");
+}
+
 function timeToOffset(dt: DateTime, startHour: number): number {
   return (dt.hour + dt.minute / 60 - startHour) * HOUR_HEIGHT;
 }
@@ -124,6 +129,13 @@ export function WeekCalendar({
   onSelectDraft: (id: string) => void;
 }) {
   const revealed = useMountReveal();
+  // An all-day draft -- a due date, typically -- is drawn twice: its named
+  // chip in the frozen band up top (where it can't be scrolled away or
+  // covered), plus a wash claiming that whole day column below
+  // (`allDayDraftsFor`), so a deadline reads as "this day is spoken for"
+  // rather than as one thin line that's easy to miss. The full-column wash is
+  // this pane's own emphasis; on Google Calendar the same event is an
+  // ordinary all-day event in the all-day row.
   const hasAllDay = draftBlocks.some((d) => d.allDay) || realEvents.some(isAllDayRealEvent);
   const draftBlockRefs = useRef(new Map<string, HTMLElement>());
   const resolveColor = (e: CalendarEvent): string => resolveEventColor(e, calendarColors);
@@ -190,7 +202,7 @@ export function WeekCalendar({
               const d = realEventDay(e, timezone);
               return d && d.hasSame(day, "day") && isAllDayRealEvent(e);
             });
-            const dayAllDayDrafts = draftBlocks.filter((d) => d.allDay && d.start.hasSame(day, "day"));
+            const dayAllDayDrafts = draftBlocks.filter((d) => d.allDay && coversDay(d, day));
             return (
               <div
                 key={`allday-${day.toISODate()}`}
@@ -213,13 +225,10 @@ export function WeekCalendar({
                   return (
                     <button
                       key={d.id}
-                      ref={(el) => {
-                        if (el) draftBlockRefs.current.set(d.id, el);
-                        else draftBlockRefs.current.delete(d.id);
-                      }}
                       type="button"
                       onClick={() => onSelectDraft(d.id)}
-                      className={`truncate rounded-md px-1.5 py-0.5 text-left text-[10.5px] font-semibold text-[var(--accInk)] transition-all duration-500 ease-[cubic-bezier(.2,.6,.2,1)] hover:brightness-95 ${
+                      title={`${d.title} — all day`}
+                      className={`shrink-0 truncate rounded-md px-1.5 py-1 text-left text-[10.5px] font-semibold text-[var(--accInk)] transition-all duration-500 ease-[cubic-bezier(.2,.6,.2,1)] hover:brightness-95 ${
                         revealed ? "translate-y-0 opacity-100" : "translate-y-1.5 opacity-0"
                       }`}
                       style={{
@@ -267,6 +276,7 @@ export function WeekCalendar({
             const laidOut = layoutOverlaps([...dayTimedReal, ...dayTimedDrafts]);
             const realById = new Map(realEvents.map((e) => [`real-${e.id}`, e]));
             const draftById = new Map(draftBlocks.map((d) => [`draft-${d.id}`, d]));
+            const allDayDraftsFor = draftBlocks.filter((d) => d.allDay && coversDay(d, day));
 
             return (
               <div key={`grid-${day.toISODate()}`} className="relative border-l border-[var(--rule2)] bg-[var(--surf)]" style={{ height: gridHeight }}>
@@ -275,6 +285,43 @@ export function WeekCalendar({
                   // bottom border directly above it.
                   i > 0 && <div key={i} className="absolute left-0 right-0 border-t border-[var(--rule2)]" style={{ top: i * HOUR_HEIGHT }} />
                 ))}
+
+                {/* Rendered before the timed blocks so those paint on top of it:
+                    the wash claims the day, it doesn't lid over whatever else
+                    is scheduled in it. Deliberately unlabeled -- the draft's
+                    name lives in the frozen band above, where nothing can
+                    scroll it away or cover it; a second copy pinned inside the
+                    column would collide with any early-morning event. */}
+                {allDayDraftsFor.map((d, index) => {
+                  const isSelected = d.id === selectedId;
+                  const widthPct = 100 / allDayDraftsFor.length;
+                  const draftIndex = draftBlocks.findIndex((b) => b.id === d.id);
+                  return (
+                    // No scroll-into-view ref: an all-day draft is already
+                    // fully on screen in the frozen band, so selecting one
+                    // shouldn't yank the hourly grid down to this column's
+                    // midpoint.
+                    <button
+                      key={`allday-${d.id}`}
+                      type="button"
+                      onClick={() => onSelectDraft(d.id)}
+                      title={`${d.title} — all day`}
+                      aria-label={`${d.title} — all day`}
+                      className="absolute rounded-lg transition-[opacity,transform,filter] duration-500 ease-[cubic-bezier(.2,.6,.2,1)] hover:brightness-95"
+                      style={{
+                        top: 0,
+                        height: gridHeight,
+                        left: `${index * widthPct}%`,
+                        width: `calc(${widthPct}% - 2px)`,
+                        border: `${isSelected ? "2.5px dashed" : "1.5px dashed"} var(--acc)`,
+                        background: "color-mix(in oklch, var(--accWash) 62%, transparent)",
+                        opacity: revealed ? 1 : 0,
+                        transform: revealed ? "translateY(0)" : "translateY(6px)",
+                        transitionDelay: revealed ? `${draftIndex * 45}ms` : "0ms",
+                      }}
+                    />
+                  );
+                })}
 
                 {laidOut.map(({ item, column, totalColumns }) => {
                   const top = Math.max(0, timeToOffset(item.start, startHour));

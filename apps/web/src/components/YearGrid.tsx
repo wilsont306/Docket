@@ -4,7 +4,8 @@ import { DateTime } from "luxon";
 import type { CalendarEvent } from "@/lib/google-calendar";
 import type { DraftBlock } from "./WeekCalendar";
 
-const MONTH_ABBR_WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
+/** Monday-first, matching the Luxon `startOf("week")` these mini-grids are built from. */
+const MONTH_ABBR_WEEKDAYS = ["M", "T", "W", "T", "F", "S", "S"];
 
 function hasAnything(day: DateTime, timezone: string, realEvents: CalendarEvent[], draftBlocks: DraftBlock[]): boolean {
   if (draftBlocks.some((d) => d.start.hasSame(day, "day"))) return true;

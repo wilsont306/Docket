@@ -154,6 +154,28 @@ export function ReviewSurface({
     setViewMode("month");
   }
 
+  /**
+   * Selecting a draft that falls outside the range currently on screen moves
+   * the calendar to it. Without this, clicking a card for (say) a due date
+   * five weeks out just highlighted a block nobody could see -- the pane sat
+   * on whatever week the earliest draft happened to anchor it to. A draft
+   * already visible leaves the anchor alone, so selecting one event in a week
+   * doesn't re-center the view out from under the user; for a recurring
+   * draft, any occurrence in view counts as visible.
+   */
+  function handleSelectDraft(id: string) {
+    setSelectedId(id);
+    const value = events.find((e) => e.id === id)?.event.startDateTime.value;
+    if (!value) return;
+    const start = DateTime.fromISO(value, { zone: timezone });
+    if (!start.isValid) return;
+    // Mobile's day strip is its own selection; keep it pointed at the same day.
+    setSelectedDayOffset(start.weekday - 1);
+    const visible = viewRange(viewMode, anchor);
+    const onScreen = draftBlocks.some((b) => b.id === id && b.start < visible.end && b.end >= visible.start);
+    if (!onScreen) setAnchorOverride(start);
+  }
+
   // Mobile's day-strip is always a week regardless of the desktop switcher's
   // current mode -- a phone screen shows one day at a time either way, so
   // "Month"/"Year" have no separate mobile rendering to switch into.
@@ -216,12 +238,19 @@ export function ReviewSurface({
     return count + fields.filter((f) => f.value === null || f.value === "").length;
   }, 0);
 
-  async function handleFieldChange(eventId: string, field: string, value: unknown) {
+  /**
+   * One or several fields in a single request. Several at once is not just an
+   * optimization: the server edits one JSON column per event, so two
+   * concurrent single-field PATCHes (a date change rewriting both start and
+   * end, or the all-day toggle rewriting three fields) would each read the
+   * same row and overwrite the other's edit.
+   */
+  async function handleFieldChange(eventId: string, updates: Array<{ field: string; value: unknown }>) {
     try {
       const res = await fetch(`/api/drafts/${draftId}/events/${eventId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ field, value }),
+        body: JSON.stringify({ fields: updates }),
       });
       const updated = await res.json();
       if (!res.ok) throw new Error(updated.error ?? "Failed to save");
@@ -412,8 +441,8 @@ export function ReviewSurface({
                 index={index}
                 saveError={saveErrors[row.id] ?? null}
                 isSelected={row.id === selectedId}
-                onSelect={() => setSelectedId(row.id)}
-                onFieldChange={(field, value) => handleFieldChange(row.id, field, value)}
+                onSelect={() => handleSelectDraft(row.id)}
+                onFieldChange={(updates) => handleFieldChange(row.id, updates)}
                 onDeleteToggle={(deleted) => handleDeleteToggle(row.id, deleted)}
               />
             ))}
@@ -506,7 +535,7 @@ export function ReviewSurface({
                 calendarColors={calendarColors}
                 draftBlocks={draftBlocks}
                 selectedId={selectedId}
-                onSelectDraft={setSelectedId}
+                onSelectDraft={handleSelectDraft}
               />
             )}
           </div>
@@ -514,6 +543,13 @@ export function ReviewSurface({
             <div className="flex items-center gap-1.5"><span className="h-[11px] w-[17px] rounded bg-[var(--coolWash)] ring-1 ring-[var(--coolEdge)]" />Already on Work</div>
             <div className="flex items-center gap-1.5"><span className="h-[11px] w-[17px] rounded border-[1.5px] border-dashed border-[var(--acc)] bg-[var(--accWash)]" />Proposed — not saved</div>
             <div className="flex items-center gap-1.5"><span className="h-[11px] w-[17px] rounded border-[1.5px] border-[var(--acc)] bg-[var(--surf)]" />Wants a look</div>
+            <div className="flex items-center gap-1.5">
+              <span
+                className="h-[11px] w-[17px] rounded border-[1.5px] border-dashed border-[var(--acc)]"
+                style={{ background: "color-mix(in oklch, var(--accWash) 62%, transparent)" }}
+              />
+              All day — claims the whole day
+            </div>
             <div className="flex items-center gap-1.5"><span className="h-1 w-[17px] rounded bg-[var(--cool)]" />Overlaps something real</div>
           </div>
         </div>
@@ -588,7 +624,7 @@ export function ReviewSurface({
                 calendarColors={calendarColors}
                 draftBlocks={draftBlocks}
                 selectedId={selectedId}
-                onSelectDraft={setSelectedId}
+                onSelectDraft={handleSelectDraft}
               />
             </div>
             <div className="mt-3 flex shrink-0 flex-wrap gap-x-4 gap-y-1.5 text-[11px] text-[var(--ink2)]">
@@ -610,8 +646,8 @@ export function ReviewSurface({
                   index={index}
                     saveError={saveErrors[row.id] ?? null}
                   isSelected={row.id === selectedId}
-                  onSelect={() => setSelectedId(row.id)}
-                  onFieldChange={(field, value) => handleFieldChange(row.id, field, value)}
+                  onSelect={() => handleSelectDraft(row.id)}
+                  onFieldChange={(updates) => handleFieldChange(row.id, updates)}
                   onDeleteToggle={(deleted) => handleDeleteToggle(row.id, deleted)}
                 />
               ))}

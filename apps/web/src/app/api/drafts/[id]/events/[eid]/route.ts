@@ -62,35 +62,47 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/drafts/[id
     return NextResponse.json(updated);
   }
 
-  const field = body?.field;
-  if (!EDITABLE_FIELDS.includes(field) && !STRUCTURED_FIELDS.includes(field)) {
+  // One edit or several. A batch matters because this handler is a
+  // read-modify-write of a single JSON column: an edit that necessarily
+  // touches more than one field (switching an event to all-day rewrites
+  // isAllDay plus both datetimes) would otherwise fire concurrent PATCHes
+  // that each read the same `event` and clobber each other on the way back.
+  const updates: Array<{ field: string; value: unknown }> = Array.isArray(body?.fields)
+    ? body.fields
+    : [{ field: body?.field, value: body?.value }];
+
+  const known = (field: unknown): field is (typeof EDITABLE_FIELDS)[number] | (typeof STRUCTURED_FIELDS)[number] =>
+    EDITABLE_FIELDS.includes(field as never) || STRUCTURED_FIELDS.includes(field as never);
+
+  if (updates.length === 0 || !updates.every((update) => known(update?.field))) {
     return NextResponse.json(
       {
-        error: `Expected { deleted: boolean }, { conflictState: one of ${CONFLICT_STATES.join(", ")} }, or { field: one of ${[...EDITABLE_FIELDS, ...STRUCTURED_FIELDS].join(", ")}, value }`,
+        error: `Expected { deleted: boolean }, { conflictState: one of ${CONFLICT_STATES.join(", ")} }, or { field: one of ${[...EDITABLE_FIELDS, ...STRUCTURED_FIELDS].join(", ")}, value } (or { fields: [{ field, value }] })`,
       },
       { status: 400 },
     );
   }
 
   const event = row.event as Record<string, unknown>;
-  if (STRUCTURED_FIELDS.includes(field)) {
-    // {rrule, plainLanguage, confidence} or null -- built client-side, set as-is rather than wrapped in the {value, confidence, provenance, ...} shape every other field uses.
-    event[field] = body.value ?? null;
-  } else {
-    const currentFieldValue = event[field] as Record<string, unknown>;
-    event[field] = {
-      ...currentFieldValue,
-      value: body.value,
-      confidence: 1,
-      provenance: null,
-      inferred: false,
-      inferredFrom: null,
-    };
-  }
+  const userEditedFields = [...row.userEditedFields];
 
-  const userEditedFields = row.userEditedFields.includes(field)
-    ? row.userEditedFields
-    : [...row.userEditedFields, field];
+  for (const { field, value } of updates) {
+    if (STRUCTURED_FIELDS.includes(field as never)) {
+      // {rrule, plainLanguage, confidence} or null -- built client-side, set as-is rather than wrapped in the {value, confidence, provenance, ...} shape every other field uses.
+      event[field] = value ?? null;
+    } else {
+      const currentFieldValue = event[field] as Record<string, unknown>;
+      event[field] = {
+        ...currentFieldValue,
+        value,
+        confidence: 1,
+        provenance: null,
+        inferred: false,
+        inferredFrom: null,
+      };
+    }
+    if (!userEditedFields.includes(field)) userEditedFields.push(field);
+  }
 
   const [updated] = await db
     .update(draftEvents)

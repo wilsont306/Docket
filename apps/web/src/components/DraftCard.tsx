@@ -161,7 +161,8 @@ export function DraftCard({
   saveError: string | null;
   isSelected: boolean;
   onSelect: () => void;
-  onFieldChange: (field: string, value: unknown) => void;
+  /** Several at once when one edit spans multiple fields -- they're saved in a single request so they can't clobber each other. */
+  onFieldChange: (updates: Array<{ field: string; value: unknown }>) => void;
   onDeleteToggle: (deleted: boolean) => void;
 }) {
   const revealed = useMountReveal();
@@ -169,16 +170,74 @@ export function DraftCard({
   const timezone = event.timezone;
   const start = event.startDateTime.value ? DateTime.fromISO(event.startDateTime.value, { zone: timezone }) : null;
   const dayLabel = start?.isValid ? start.toFormat("EEE d").toUpperCase() : "DRAFT";
+  const isAllDay = event.isAllDay.value ?? false;
+  // An all-day event's end is *defined* as its start day, so resolve.ts
+  // marking that "inferred" is bookkeeping, not a guess anyone needs to
+  // check -- flagging it (and printing a 12:00 AM – 12:00 AM range) was
+  // asking the user to review a date the source stated outright.
   const timeNeedsAttention =
-    event.startDateTime.value === null || event.endDateTime.value === null || event.startDateTime.inferred || event.endDateTime.inferred;
-  const inferredTimeField = event.endDateTime.inferred ? event.endDateTime : event.startDateTime.inferred ? event.startDateTime : null;
+    !isAllDay &&
+    (event.startDateTime.value === null || event.endDateTime.value === null || event.startDateTime.inferred || event.endDateTime.inferred);
+  const inferredTimeField = isAllDay ? null : event.endDateTime.inferred ? event.endDateTime : event.startDateTime.inferred ? event.startDateTime : null;
   const recurrencePreset = detectRecurrencePreset(event.recurrence);
 
   function handleRecurrenceChange(preset: RecurrencePreset) {
-    if (preset === "none") onFieldChange("recurrence", null);
-    else if (preset === "daily") onFieldChange("recurrence", buildRecurrence("daily", null, null));
-    else if (preset === "weekly") onFieldChange("recurrence", buildRecurrence("weekly", null, null));
-    else if (preset === "weekdays") onFieldChange("recurrence", buildRecurrence("weekly", WEEKDAYS, null));
+    if (preset === "none") onFieldChange([{ field: "recurrence", value: null }]);
+    else if (preset === "daily") onFieldChange([{ field: "recurrence", value: buildRecurrence("daily", null, null) }]);
+    else if (preset === "weekly") onFieldChange([{ field: "recurrence", value: buildRecurrence("weekly", null, null) }]);
+    else if (preset === "weekdays") onFieldChange([{ field: "recurrence", value: buildRecurrence("weekly", WEEKDAYS, null) }]);
+  }
+
+  /**
+   * Moving the date moves the whole event by that many days, rather than
+   * stamping the new date onto both ends -- that kept a same-day event
+   * correct but silently collapsed a multi-day one onto a single day. All-day
+   * events stay bare `yyyy-LL-dd` through the move; timed ones keep their
+   * time of day (`plus({days})` rides over a DST boundary correctly).
+   */
+  function handleDateChange(dateValue: string) {
+    const target = DateTime.fromFormat(dateValue, "yyyy-LL-dd", { zone: timezone });
+    if (!target.isValid) return;
+    if (!start?.isValid) {
+      onFieldChange([
+        { field: "startDateTime", value: withDate(event.startDateTime.value, dateValue, timezone) },
+        { field: "endDateTime", value: withDate(event.endDateTime.value, dateValue, timezone) },
+      ]);
+      return;
+    }
+    const format = (dt: DateTime) => (isAllDay ? dt.toISODate() : dt.toISO({ suppressMilliseconds: true }));
+    const shiftDays = target.startOf("day").diff(start.startOf("day"), "days").days;
+    const end = event.endDateTime.value ? DateTime.fromISO(event.endDateTime.value, { zone: timezone }) : null;
+    onFieldChange([
+      { field: "startDateTime", value: format(start.plus({ days: shiftDays })) },
+      { field: "endDateTime", value: end?.isValid ? format(end.plus({ days: shiftDays })) : withDate(event.endDateTime.value, dateValue, timezone) },
+    ]);
+  }
+
+  /**
+   * All-day and timed are different shapes, not just a flag: an all-day event
+   * is stored as bare `yyyy-LL-dd` (what Google's all-day API takes), and a
+   * timed one needs an actual time of day. Toggling therefore rewrites the
+   * datetimes too -- midnight-to-midnight would otherwise become a zero-length
+   * event the moment someone switched a due date back to timed.
+   */
+  function handleAllDayToggle(nextAllDay: boolean) {
+    const base = start?.isValid ? start : DateTime.now().setZone(timezone);
+    if (nextAllDay) {
+      const date = base.toISODate()!;
+      onFieldChange([
+        { field: "isAllDay", value: true },
+        { field: "startDateTime", value: date },
+        { field: "endDateTime", value: date },
+      ]);
+    } else {
+      const startsAt = base.set({ hour: 9, minute: 0, second: 0, millisecond: 0 });
+      onFieldChange([
+        { field: "isAllDay", value: false },
+        { field: "startDateTime", value: startsAt.toISO({ suppressMilliseconds: true }) },
+        { field: "endDateTime", value: startsAt.plus({ hours: 1 }).toISO({ suppressMilliseconds: true }) },
+      ]);
+    }
   }
 
   if (row.deleted) {
@@ -210,7 +269,7 @@ export function DraftCard({
               defaultValue={event.title.value ?? ""}
               placeholder="(untitled)"
               onClick={(e) => e.stopPropagation()}
-              onBlur={(e) => onFieldChange("title", e.target.value || null)}
+              onBlur={(e) => onFieldChange([{ field: "title", value: e.target.value || null }])}
             />
           </FieldFlag>
         </div>
@@ -236,10 +295,7 @@ export function DraftCard({
             className="border-b border-dotted border-[var(--rule)] bg-transparent font-mono text-[13px] outline-none [&::-webkit-calendar-picker-indicator]:opacity-0"
             defaultValue={toDateInputValue(event.startDateTime.value, timezone)}
             onClick={(e) => e.stopPropagation()}
-            onChange={(e) => {
-              onFieldChange("startDateTime", withDate(event.startDateTime.value, e.target.value, timezone));
-              onFieldChange("endDateTime", withDate(event.endDateTime.value, e.target.value, timezone));
-            }}
+            onChange={(e) => handleDateChange(e.target.value)}
           />
         </FieldFlag>
       </div>
@@ -249,37 +305,61 @@ export function DraftCard({
         onClick={(e) => e.stopPropagation()}
       >
         <ClockIcon className="h-3.5 w-3.5 shrink-0 text-[var(--ink3)]" />
-        <select
-          className={`shrink-0 bg-transparent font-mono text-[13px] outline-none ${
-            event.startDateTime.inferred
-              ? "border-b-2 border-solid border-[var(--acc)] font-semibold"
-              : "border-b border-dotted border-[var(--rule)]"
-          }`}
-          defaultValue={toTimeOptionValue(event.startDateTime.value, timezone)}
-          onChange={(e) => onFieldChange("startDateTime", withTimeOfDay(event.startDateTime.value, e.target.value, timezone))}
-        >
-          {TIME_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value} className="bg-[var(--surf)] text-[var(--ink)]">
-              {opt.label}
-            </option>
-          ))}
-        </select>
-        <span className="shrink-0 text-[var(--ink3)]">–</span>
-        <select
-          className={`shrink-0 bg-transparent font-mono text-[13px] outline-none ${
-            event.endDateTime.inferred
-              ? "border-b-2 border-solid border-[var(--acc)] font-semibold"
-              : "border-b border-dotted border-[var(--rule)]"
-          }`}
-          defaultValue={toTimeOptionValue(event.endDateTime.value, timezone)}
-          onChange={(e) => onFieldChange("endDateTime", withTimeOfDay(event.endDateTime.value, e.target.value, timezone))}
-        >
-          {TIME_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value} className="bg-[var(--surf)] text-[var(--ink)]">
-              {opt.label}
-            </option>
-          ))}
-        </select>
+        {isAllDay ? (
+          <>
+            <span className="shrink-0 rounded-full border border-[var(--accEdge)] bg-[var(--accWash)] px-2.5 py-0.5 text-[12px] font-semibold text-[var(--accInk)]">
+              All day
+            </span>
+            <button
+              type="button"
+              onClick={() => handleAllDayToggle(false)}
+              className="shrink-0 text-[12px] text-[var(--ink3)] underline decoration-dotted underline-offset-2 transition-colors hover:text-[var(--ink)]"
+            >
+              set a time
+            </button>
+          </>
+        ) : (
+          <>
+            <select
+              className={`shrink-0 bg-transparent font-mono text-[13px] outline-none ${
+                event.startDateTime.inferred
+                  ? "border-b-2 border-solid border-[var(--acc)] font-semibold"
+                  : "border-b border-dotted border-[var(--rule)]"
+              }`}
+              defaultValue={toTimeOptionValue(event.startDateTime.value, timezone)}
+              onChange={(e) => onFieldChange([{ field: "startDateTime", value: withTimeOfDay(event.startDateTime.value, e.target.value, timezone) }])}
+            >
+              {TIME_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value} className="bg-[var(--surf)] text-[var(--ink)]">
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <span className="shrink-0 text-[var(--ink3)]">–</span>
+            <select
+              className={`shrink-0 bg-transparent font-mono text-[13px] outline-none ${
+                event.endDateTime.inferred
+                  ? "border-b-2 border-solid border-[var(--acc)] font-semibold"
+                  : "border-b border-dotted border-[var(--rule)]"
+              }`}
+              defaultValue={toTimeOptionValue(event.endDateTime.value, timezone)}
+              onChange={(e) => onFieldChange([{ field: "endDateTime", value: withTimeOfDay(event.endDateTime.value, e.target.value, timezone) }])}
+            >
+              {TIME_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value} className="bg-[var(--surf)] text-[var(--ink)]">
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => handleAllDayToggle(true)}
+              className="shrink-0 text-[12px] text-[var(--ink3)] underline decoration-dotted underline-offset-2 transition-colors hover:text-[var(--ink)]"
+            >
+              all day
+            </button>
+          </>
+        )}
       </div>
       {inferredTimeField && (
         <div className="ml-14 mt-1 pl-1.5 text-xs italic text-[var(--ink3)]">
@@ -296,7 +376,7 @@ export function DraftCard({
               placeholder="no location"
               defaultValue={event.location.value ?? ""}
               onClick={(e) => e.stopPropagation()}
-              onBlur={(e) => onFieldChange("location", e.target.value || null)}
+              onBlur={(e) => onFieldChange([{ field: "location", value: e.target.value || null }])}
             />
           </FieldFlag>
         ) : (
@@ -349,7 +429,7 @@ export function DraftCard({
           className="min-w-0 flex-1 resize-y border-b border-dotted border-[var(--rule)] bg-transparent text-[12.5px] leading-5 text-[var(--ink2)] outline-none"
           placeholder="Notes, meeting link, etc."
           defaultValue={event.description.value ?? ""}
-          onBlur={(e) => onFieldChange("description", e.target.value || null)}
+          onBlur={(e) => onFieldChange([{ field: "description", value: e.target.value || null }])}
         />
       </div>
 
