@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { PipelineError, runPhotoCapturePipeline, runTextCapturePipeline } from "@/lib/pipeline/run";
 import { PersistError } from "@/lib/pipeline/persist";
 import { ValidationError, isValidIanaZone } from "@calendar-auto/core";
+import { TEXT_LIMITS, countWords } from "@/lib/text-limits";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -41,6 +42,16 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
   if (!body || body.kind !== "text" || typeof body.sourceText !== "string" || !body.sourceText.trim()) {
     return NextResponse.json({ error: "Expected { kind: 'text', sourceText: string }" }, { status: 400 });
+  }
+
+  // The composer clamps as you type, but that's a courtesy to the person
+  // typing, not a control -- this is the one that actually keeps an
+  // oversized body out of the extraction model.
+  if (body.sourceText.length > TEXT_LIMITS.capture.chars || countWords(body.sourceText) > TEXT_LIMITS.capture.words) {
+    return NextResponse.json(
+      { error: `That capture is too long. Keep it under ${TEXT_LIMITS.capture.words} words and send the rest separately.` },
+      { status: 413 },
+    );
   }
 
   // NFR-9.3.4: relative dates and bare times resolve against the
