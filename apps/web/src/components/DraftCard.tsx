@@ -5,6 +5,7 @@ import { DateTime } from "luxon";
 import { buildRecurrence, type Field, type ParsedEvent, type Recurrence, type RecurrenceDay } from "@calendar-auto/core";
 import { fifteenMinuteTimeOptions, toDateInputValue, toTimeOptionValue, withDate, withTimeOfDay } from "@/lib/datetime-input";
 import { useMountReveal } from "@/lib/use-mount-reveal";
+import { TEXT_LIMITS, clampText } from "@/lib/text-limits";
 
 const WEEKDAYS: RecurrenceDay[] = ["MO", "TU", "WE", "TH", "FR"];
 
@@ -268,8 +269,15 @@ export function DraftCard({
               className="min-w-0 flex-1 border-b border-dotted border-[var(--rule)] bg-transparent text-[15.5px] font-medium tracking-[-0.005em] outline-none"
               defaultValue={event.title.value ?? ""}
               placeholder="(untitled)"
+              maxLength={TEXT_LIMITS.title.chars}
               onClick={(e) => e.stopPropagation()}
-              onBlur={(e) => onFieldChange([{ field: "title", value: e.target.value || null }])}
+              onBlur={(e) => {
+                const value = clampText(e.target.value, TEXT_LIMITS.title);
+                // Reflected back into the box so a clamped edit doesn't
+                // leave the field showing text that wasn't saved.
+                e.target.value = value;
+                onFieldChange([{ field: "title", value: value || null }]);
+              }}
             />
           </FieldFlag>
         </div>
@@ -375,8 +383,13 @@ export function DraftCard({
               className="w-full border-b border-dotted border-[var(--rule)] bg-transparent outline-none"
               placeholder="no location"
               defaultValue={event.location.value ?? ""}
+              maxLength={TEXT_LIMITS.location.chars}
               onClick={(e) => e.stopPropagation()}
-              onBlur={(e) => onFieldChange([{ field: "location", value: e.target.value || null }])}
+              onBlur={(e) => {
+                const value = clampText(e.target.value, TEXT_LIMITS.location);
+                e.target.value = value;
+                onFieldChange([{ field: "location", value: value || null }]);
+              }}
             />
           </FieldFlag>
         ) : (
@@ -429,7 +442,12 @@ export function DraftCard({
           className="min-w-0 flex-1 resize-y border-b border-dotted border-[var(--rule)] bg-transparent text-[12.5px] leading-5 text-[var(--ink2)] outline-none"
           placeholder="Notes, meeting link, etc."
           defaultValue={event.description.value ?? ""}
-          onBlur={(e) => onFieldChange([{ field: "description", value: e.target.value || null }])}
+          maxLength={TEXT_LIMITS.description.chars}
+          onBlur={(e) => {
+            const value = clampText(e.target.value, TEXT_LIMITS.description);
+            e.target.value = value;
+            onFieldChange([{ field: "description", value: value || null }]);
+          }}
         />
       </div>
 

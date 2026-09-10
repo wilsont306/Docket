@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { DateTime } from "luxon";
 import { expandRecurrenceOccurrences } from "@calendar-auto/core";
-import type { CalendarEvent, CalendarListEntry } from "@/lib/google-calendar";
+import type { CalendarListEntry } from "@/lib/google-calendar";
 import { computeConflictState } from "@/lib/conflicts";
 import { DraftCard, type DraftEventRow } from "./DraftCard";
 import { WeekCalendar, type DraftBlock } from "./WeekCalendar";
@@ -14,6 +14,7 @@ import { MonthGrid } from "./MonthGrid";
 import { YearGrid } from "./YearGrid";
 import { viewRange, shiftAnchor, viewLabel, type CalendarViewMode } from "@/lib/calendar-view";
 import { useMountReveal } from "@/lib/use-mount-reveal";
+import { useCalendarEvents } from "@/lib/use-calendar-events";
 
 interface CommitResult {
   id: string;
@@ -53,7 +54,6 @@ export function ReviewSurface({
   const revealed = useMountReveal();
   const [events, setEvents] = useState(initialEvents);
   const [selectedId, setSelectedId] = useState<string | null>(initialEvents[0]?.id ?? null);
-  const [realEvents, setRealEvents] = useState<CalendarEvent[]>([]);
   const [calendars, setCalendars] = useState<CalendarListEntry[]>([]);
   const [calendarId, setCalendarId] = useState(initialCalendarId);
   // "My calendars" visibility checklist (§4.6): which of the user's real
@@ -190,28 +190,23 @@ export function ReviewSurface({
   // mobile's own week strip -- a "day" view still needs the full week
   // fetched since mobile's day-strip labels/data depend on it, and month/
   // year already fully contain any week within them.
-  const fetchRange = useMemo(() => viewRange(viewMode === "day" ? "week" : viewMode, anchor), [viewMode, anchor]);
+  const rangeMode = viewMode === "day" ? "week" : viewMode;
+  const fetchRange = useMemo(() => viewRange(rangeMode, anchor), [rangeMode, anchor]);
 
   // §6.3 stage 6 / FR-4.6.1: real calendar events for the visible range, used
   // for both the calendar pane and the overlap/duplicate check below. Merged
   // across every calendar checked in "My calendars" -- an empty checked set
   // before that list has loaded falls back to the server's "primary" default
   // rather than fetching nothing.
-  useEffect(() => {
-    let cancelled = false;
-    const timeMin = fetchRange.start.toUTC().toISO()!;
-    const timeMax = fetchRange.end.toUTC().toISO()!;
-    const params = new URLSearchParams({ timeMin, timeMax });
-    for (const id of checkedCalendarIds) params.append("calendarId", id);
-    fetch(`/api/calendar/events?${params.toString()}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (!cancelled) setRealEvents(data.events ?? []);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [fetchRange, checkedCalendarIds]);
+  //
+  // Cached per range, with the ranges on either side warmed in the
+  // background, so stepping through weeks doesn't wait on the network for
+  // somewhere you've already been (or are about to go).
+  const neighbourRanges = useMemo(
+    () => [viewRange(rangeMode, shiftAnchor(rangeMode, anchor, -1)), viewRange(rangeMode, shiftAnchor(rangeMode, anchor, 1))],
+    [rangeMode, anchor],
+  );
+  const { events: realEvents, loading: eventsLoading } = useCalendarEvents(checkedCalendarIds, fetchRange, neighbourRanges);
 
   useEffect(() => {
     if (realEvents.length === 0) return;
@@ -495,7 +490,13 @@ export function ReviewSurface({
               >
                 <ChevronIcon direction="left" />
               </button>
-              <span className="min-w-[130px] text-center text-[13.5px] font-semibold">{viewLabel(viewMode, anchor)}</span>
+              <span className="flex min-w-[130px] items-center justify-center gap-1.5 text-center text-[13.5px] font-semibold">
+                {viewLabel(viewMode, anchor)}
+                {/* Only for a range with nothing cached yet -- a background
+                    revalidation of a range already on screen shouldn't blink
+                    a spinner at anyone. */}
+                {eventsLoading && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--acc)]" title="Loading your calendar" />}
+              </span>
               <button
                 type="button"
                 onClick={handleNext}

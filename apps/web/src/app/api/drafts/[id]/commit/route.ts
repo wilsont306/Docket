@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 import { getDb } from "@/db";
 import { commits, draftEvents, drafts } from "@/db/schema";
 import { insertEvent } from "@/lib/google-calendar";
+import { invalidateUserCalendarCache } from "@/lib/calendar-cache";
 import { getDraftOwnerId } from "@/lib/pipeline/ownership";
 import {
   assertDateWithinSaneRange,
@@ -91,6 +92,11 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/drafts/[id
       failures.push({ draftEventId: row.id, error: error instanceof Error ? error.message : "Unknown error" });
     }
   }
+
+  // Even a partial commit changed the real calendar, so the cached windows
+  // are wrong from here on -- dropped before responding, so the refetch the
+  // client fires on success can't race a stale entry.
+  if (googleEventIds.length > 0) invalidateUserCalendarCache(session.user.id);
 
   if (googleEventIds.length === 0 && failures.length > 0) {
     // Nothing was actually written -- safe to let the user retry the whole draft.

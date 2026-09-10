@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 import { getDb } from "@/db";
 import { draftEvents, drafts } from "@/db/schema";
 import { getDraftOwnerId } from "@/lib/pipeline/ownership";
+import { TEXT_LIMITS, countWords } from "@/lib/text-limits";
 
 const EDITABLE_FIELDS = ["title", "startDateTime", "endDateTime", "isAllDay", "location", "description"] as const;
 /** Not a Field<T> like the others -- {rrule, plainLanguage, confidence} or null, set directly rather than wrapped. */
@@ -81,6 +82,20 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/drafts/[id
       },
       { status: 400 },
     );
+  }
+
+  // The same caps the draft card applies while you type, enforced here too
+  // so an edit can't put a field past what a capture is allowed to contain.
+  const TEXT_FIELD_LIMITS = {
+    title: TEXT_LIMITS.title,
+    location: TEXT_LIMITS.location,
+    description: TEXT_LIMITS.description,
+  } as const;
+  for (const { field, value } of updates) {
+    const limit = TEXT_FIELD_LIMITS[field as keyof typeof TEXT_FIELD_LIMITS];
+    if (limit && typeof value === "string" && (value.length > limit.chars || countWords(value) > limit.words)) {
+      return NextResponse.json({ error: `That ${field} is too long — keep it under ${limit.words} words.` }, { status: 413 });
+    }
   }
 
   const event = row.event as Record<string, unknown>;

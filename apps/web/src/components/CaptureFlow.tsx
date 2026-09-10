@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { DateTime } from "luxon";
 import { ReviewSurface, type CaptureSource } from "./ReviewSurface";
@@ -17,6 +17,9 @@ import { viewRange, shiftAnchor, viewLabel, type CalendarViewMode } from "@/lib/
 import type { CalendarEvent, CalendarListEntry } from "@/lib/google-calendar";
 import { preprocessImage } from "@/lib/image-preprocess";
 import { useMountReveal } from "@/lib/use-mount-reveal";
+import { useCalendarEvents, invalidateCalendarEvents } from "@/lib/use-calendar-events";
+import { MAX_RECORDING_SECONDS, useDictation, type DictationControls } from "@/lib/use-dictation";
+import { TEXT_LIMITS, clampText, countWords, isNearLimit } from "@/lib/text-limits";
 
 interface CommitResult {
   id: string;
@@ -36,7 +39,8 @@ interface HistoryEntry {
   id: string;
   kind: CaptureTab;
   label: string;
-  state: "parsing" | "ready" | "error";
+  /** "stopped" is the user pressing Stop -- it may still land a draftId later, which makes the bubble reopenable without ever taking over the screen. */
+  state: "parsing" | "ready" | "error" | "stopped";
   /** Set once parsing succeeds -- lets a past capture be reopened for review instead of being orphaned once you navigate back to the composer. */
   draftId?: string;
   /** Set on failure -- shown inline on the bubble instead of navigating to a separate error page. */
@@ -64,8 +68,6 @@ interface PendingReview {
   calendarId: string;
   source: CaptureSource | null;
 }
-
-const DEFAULT_TRANSCRIPT = "follow-up with Dr. Patel on the 14th at 3, same office";
 
 const EXAMPLE_PRESETS = [
   {
@@ -140,6 +142,18 @@ export function CaptureFlow({
   const [phase, setPhase] = useState<Phase>({ name: "capture" });
   const [autoConfirmEnabled, setAutoConfirmEnabled] = useState(initialAutoConfirm);
   const [composerText, setComposerText] = useState("");
+
+  /**
+   * Dictation appends rather than replaces: a second take after an edit
+   * should extend what's in the box, which is also what makes "say it,
+   * read it, say the rest" work without losing the first half.
+   */
+  const dictation = useDictation(
+    useCallback((text: string) => {
+      setComposerText((previous) => clampText(previous.trim() ? `${previous.trim()} ${text}` : text, TEXT_LIMITS.capture));
+      setComposerKind("voice");
+    }, []),
+  );
   const [composerKind, setComposerKind] = useState<"text" | "voice">("text");
   const [attachedPhoto, setAttachedPhoto] = useState<File | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -149,6 +163,11 @@ export function CaptureFlow({
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const libraryInputRef = useRef<HTMLInputElement>(null);
   const stageTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  // The capture currently parsing, and every capture the user has stopped --
+  // a parse that lands after its Stop must not navigate, auto-confirm, or
+  // report an error (see handleStop).
+  const activeHistoryIdRef = useRef<string | null>(null);
+  const stoppedHistoryIdsRef = useRef<Set<string>>(new Set());
   // Object URLs handed to the chat log outlive the composer chip that made
   // them, so they're released here rather than by whichever bubble happens
   // to be showing one.
@@ -186,7 +205,6 @@ export function CaptureFlow({
     setViewMode("month");
   }
 
-  const [realEvents, setRealEvents] = useState<CalendarEvent[]>([]);
   const [calendars, setCalendars] = useState<CalendarListEntry[]>([]);
   // "My calendars" visibility checklist (§4.6): which of the user's real
   // calendars contribute to this mini calendar. Defaults to everything
@@ -223,16 +241,13 @@ export function CaptureFlow({
 
   const calendarColors = useMemo(() => Object.fromEntries(calendars.map((c) => [c.id, c.backgroundColor])), [calendars]);
 
-  useEffect(() => {
-    const timeMin = fetchRange.start.toUTC().toISO()!;
-    const timeMax = fetchRange.end.toUTC().toISO()!;
-    const params = new URLSearchParams({ timeMin, timeMax });
-    for (const id of checkedCalendarIds) params.append("calendarId", id);
-    fetch(`/api/calendar/events?${params.toString()}`)
-      .then((res) => res.json())
-      .then((data) => setRealEvents(data.events ?? []))
-      .catch(() => setRealEvents([]));
-  }, [fetchRange, checkedCalendarIds]);
+  // Cached per range with the neighbouring ranges warmed in the background,
+  // so prev/next doesn't wait on Google for a range already loaded.
+  const neighbourRanges = useMemo(
+    () => [viewRange(viewMode, shiftAnchor(viewMode, anchor, -1)), viewRange(viewMode, shiftAnchor(viewMode, anchor, 1))],
+    [viewMode, anchor],
+  );
+  const { events: realEvents, loading: eventsLoading } = useCalendarEvents(checkedCalendarIds, fetchRange, neighbourRanges);
 
   function clearStageTimers() {
     stageTimersRef.current.forEach(clearTimeout);
@@ -245,8 +260,29 @@ export function CaptureFlow({
     return id;
   }
 
-  function settleHistory(id: string, state: "ready" | "error", draftId?: string, errorMessage?: string) {
+  function settleHistory(id: string, state: "ready" | "error" | "stopped", draftId?: string, errorMessage?: string) {
     setHistory((prev) => prev.map((entry) => (entry.id === id ? { ...entry, state, draftId, errorMessage } : entry)));
+  }
+
+  /**
+   * Stop waiting on the capture that's parsing. Deliberately *not* an
+   * AbortController: the model call is already running on the server and
+   * aborting the request wouldn't cancel it -- it would only throw away the
+   * draftId in the reply, orphaning a draft with nothing in the UI able to
+   * reach it again. So the request is left to land, and stopping instead
+   * means the composer stops blocking and this capture no longer steers the
+   * app: no status line, no navigating to review, and no auto-confirm firing
+   * for something the user just said to stop. If the parse does finish, its
+   * bubble quietly becomes reopenable rather than vanishing.
+   */
+  function handleStop() {
+    clearStageTimers();
+    setStatus(null);
+    const id = activeHistoryIdRef.current;
+    activeHistoryIdRef.current = null;
+    if (!id) return;
+    stoppedHistoryIdsRef.current.add(id);
+    setHistory((prev) => prev.map((entry) => (entry.id === id ? { ...entry, state: "stopped" } : entry)));
   }
 
   /** Cycles `status` through this capture kind's stage labels, shown as a line above the composer instead of a full-screen loading page. */
@@ -316,12 +352,21 @@ export function CaptureFlow({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to parse");
+      if (stoppedHistoryIdsRef.current.has(historyId)) {
+        // Stopped while this was in flight: keep the draft reachable from its
+        // bubble, but don't take over the screen on the user's behalf.
+        settleHistory(historyId, "stopped", data.draftId);
+        return;
+      }
       settleHistory(historyId, "ready", data.draftId);
       await loadDraft(data.draftId, { autoConfirm: autoConfirmEnabled });
     } catch (error) {
+      if (stoppedHistoryIdsRef.current.has(historyId)) return;
       clearStageTimers();
       setStatus(null);
       settleHistory(historyId, "error", undefined, error instanceof Error ? error.message : "Something went wrong");
+    } finally {
+      if (activeHistoryIdRef.current === historyId) activeHistoryIdRef.current = null;
     }
   }
 
@@ -337,12 +382,19 @@ export function CaptureFlow({
       const res = await fetch("/api/captures", { method: "POST", body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to parse");
+      if (stoppedHistoryIdsRef.current.has(historyId)) {
+        settleHistory(historyId, "stopped", data.draftId);
+        return;
+      }
       settleHistory(historyId, "ready", data.draftId);
       await loadDraft(data.draftId, { autoConfirm: autoConfirmEnabled });
     } catch (error) {
+      if (stoppedHistoryIdsRef.current.has(historyId)) return;
       clearStageTimers();
       setStatus(null);
       settleHistory(historyId, "error", undefined, error instanceof Error ? error.message : "Something went wrong");
+    } finally {
+      if (activeHistoryIdRef.current === historyId) activeHistoryIdRef.current = null;
     }
   }
 
@@ -361,6 +413,7 @@ export function CaptureFlow({
       const previewUrl = URL.createObjectURL(attachedPhoto);
       historyPreviewUrlsRef.current.push(previewUrl);
       const historyId = pushHistory("photo", attachedPhoto.name, previewUrl);
+      activeHistoryIdRef.current = historyId;
       const file = attachedPhoto;
       setAttachedPhoto(null);
       setComposerText("");
@@ -372,15 +425,13 @@ export function CaptureFlow({
     if (!text) return;
     const kind = composerKind;
     const historyId = pushHistory(kind, text.length > 64 ? `${text.slice(0, 64)}…` : text);
+    activeHistoryIdRef.current = historyId;
     setComposerText("");
     setComposerKind("text");
     void parseText(kind, text, historyId, draftId);
   }
 
-  function handleMicClick() {
-    setComposerText(DEFAULT_TRANSCRIPT);
-    setComposerKind("voice");
-  }
+
 
   function handleUseExample(text: string) {
     setComposerText(text);
@@ -425,6 +476,9 @@ export function CaptureFlow({
   }
 
   function handleCommitted(result: CommitResult) {
+    // The calendar just changed underneath every cached range, and the
+    // composer's mini calendar is the next thing on screen.
+    invalidateCalendarEvents();
     setPhase({ name: "committed", result, secondsLeft: 10 });
     const interval = setInterval(() => {
       setPhase((prev) => {
@@ -444,6 +498,7 @@ export function CaptureFlow({
   async function handleUndo() {
     if (phase.name !== "committed") return;
     await fetch(`/api/commits/${phase.result.id}/revert`, { method: "POST" });
+    invalidateCalendarEvents();
     setPhase({ name: "capture" });
   }
 
@@ -503,6 +558,7 @@ export function CaptureFlow({
       weekDays={weekDays}
       timezone={timezone}
       realEvents={realEvents}
+      eventsLoading={eventsLoading}
       calendars={calendars}
       calendarColors={calendarColors}
       checkedCalendarIds={checkedCalendarIds}
@@ -520,12 +576,13 @@ export function CaptureFlow({
         setComposerText(value);
         setComposerKind("text");
       }}
-      onMicClick={handleMicClick}
+      dictation={dictation}
       onAttachClick={() => libraryInputRef.current?.click()}
       onCameraClick={() => cameraInputRef.current?.click()}
       onPhotoPasted={(file) => setAttachedPhoto(file)}
       onRemovePhoto={() => setAttachedPhoto(null)}
       onSend={handleSend}
+      onStop={handleStop}
       onUseExample={handleUseExample}
       onAnswerLocation={handleAnswerLocation}
       onReopenDraft={loadDraft}
@@ -626,6 +683,7 @@ function CaptureScreen({
   weekDays,
   timezone,
   realEvents,
+  eventsLoading,
   calendars,
   calendarColors,
   checkedCalendarIds,
@@ -640,12 +698,13 @@ function CaptureScreen({
   onJumpToDay,
   onJumpToMonth,
   onComposerTextChange,
-  onMicClick,
+  dictation,
   onAttachClick,
   onCameraClick,
   onPhotoPasted,
   onRemovePhoto,
   onSend,
+  onStop,
   onUseExample,
   onAnswerLocation,
   onReopenDraft,
@@ -662,6 +721,8 @@ function CaptureScreen({
   weekDays: DateTime[];
   timezone: string;
   realEvents: CalendarEvent[];
+  /** True only for a range with nothing cached yet -- a background refresh stays silent. */
+  eventsLoading: boolean;
   calendars: CalendarListEntry[];
   calendarColors: Record<string, string | undefined>;
   checkedCalendarIds: Set<string>;
@@ -676,12 +737,15 @@ function CaptureScreen({
   onJumpToDay: (day: DateTime) => void;
   onJumpToMonth: (month: DateTime) => void;
   onComposerTextChange: (value: string) => void;
-  onMicClick: () => void;
+  /** Live recorder state for the composer's mic button -- see useDictation. */
+  dictation: DictationControls;
   onAttachClick: () => void;
   onCameraClick: () => void;
   onPhotoPasted: (file: File) => void;
   onRemovePhoto: () => void;
   onSend: () => void;
+  /** Stops waiting on the capture that's parsing -- see handleStop. */
+  onStop: () => void;
   onUseExample: (text: string) => void;
   onAnswerLocation: (question: LocationQuestion, value: string | null) => void;
   /** Reopens a previously-parsed, still-unconfirmed draft for review -- otherwise leaving via "Add another"/"Back" orphans it with no way back. */
@@ -751,7 +815,7 @@ function CaptureScreen({
                   title="Dictate"
                   body="Tap the mic, say it, edit the transcript before sending if it mis-heard something."
                   onClick={() => {
-                    onMicClick();
+                    dictation.toggle();
                     textareaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
                   }}
                 />
@@ -819,7 +883,8 @@ function CaptureScreen({
             <textarea
               ref={textareaRef}
               value={composerText}
-              onChange={(e) => onComposerTextChange(e.target.value)}
+              maxLength={TEXT_LIMITS.capture.chars}
+              onChange={(e) => onComposerTextChange(clampText(e.target.value, TEXT_LIMITS.capture))}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && canSend) {
                   e.preventDefault();
@@ -869,38 +934,112 @@ function CaptureScreen({
                 </button>
               </div>
               <div className="flex items-center gap-1">
+                {/* Recording and transcribing are the same button in
+                    different states rather than separate controls: the thing
+                    you press to start is the thing you reach for to stop. */}
                 <button
                   type="button"
-                  onClick={onMicClick}
-                  disabled={busy}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--ink2)] transition-colors hover:bg-[var(--sunk)] disabled:pointer-events-none"
-                  aria-label="Dictate"
-                  title="Dictate"
+                  onClick={dictation.toggle}
+                  disabled={busy || dictation.status === "transcribing" || dictation.status === "requesting" || !dictation.supported}
+                  className={`flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg transition-colors disabled:pointer-events-none ${
+                    dictation.status === "recording"
+                      ? "w-auto bg-[var(--accWash)] px-2.5 text-[var(--accInk)]"
+                      : "w-8 text-[var(--ink2)] hover:bg-[var(--sunk)]"
+                  } ${dictation.status === "transcribing" ? "opacity-60" : ""}`}
+                  aria-label={dictation.status === "recording" ? "Stop recording" : "Dictate"}
+                  title={
+                    !dictation.supported
+                      ? "This browser can't record audio"
+                      : dictation.status === "recording"
+                        ? "Stop recording"
+                        : dictation.status === "transcribing"
+                          ? "Transcribing…"
+                          : "Dictate"
+                  }
                 >
-                  <MicIcon />
+                  {dictation.status === "recording" ? (
+                    <>
+                      <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[var(--acc)]" />
+                      <span className="font-mono text-[12px] tabular-nums">{formatTake(dictation.seconds)}</span>
+                    </>
+                  ) : dictation.status === "transcribing" ? (
+                    <SpinnerIcon />
+                  ) : (
+                    <MicIcon />
+                  )}
                 </button>
-                <button
-                  type="button"
-                  onClick={onSend}
-                  disabled={!canSend}
-                  className="ml-1 flex h-8 shrink-0 items-center justify-center rounded-lg bg-[var(--btn)] px-4 text-[13px] font-semibold text-[var(--onBtn)] transition hover:brightness-95 active:brightness-90 disabled:opacity-40 disabled:pointer-events-none"
-                >
-                  Send
-                </button>
+                {dictation.status === "recording" && (
+                  <button
+                    type="button"
+                    onClick={dictation.cancel}
+                    className="flex h-8 shrink-0 items-center justify-center rounded-lg px-2 text-[12px] font-medium text-[var(--ink2)] transition-colors hover:bg-[var(--sunk)]"
+                    title="Discard this recording"
+                  >
+                    Discard
+                  </button>
+                )}
+                {/* Takes Send's place rather than sitting beside it: while
+                    something is parsing there's nothing to send anyway, and
+                    the one button under your cursor is the one you'd reach
+                    for to make it stop. */}
+                {status ? (
+                  <button
+                    type="button"
+                    onClick={onStop}
+                    className="ml-1 flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--rule)] bg-[var(--surf)] px-3.5 text-[13px] font-semibold text-[var(--ink)] transition-colors hover:bg-[var(--sunk)]"
+                    aria-label="Stop parsing"
+                    title="Stop"
+                  >
+                    <StopIcon />
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={onSend}
+                    disabled={!canSend}
+                    className="ml-1 flex h-8 shrink-0 items-center justify-center rounded-lg bg-[var(--btn)] px-4 text-[13px] font-semibold text-[var(--onBtn)] transition hover:brightness-95 active:brightness-90 disabled:opacity-40 disabled:pointer-events-none"
+                  >
+                    Send
+                  </button>
+                )}
               </div>
             </div>
           </div>
-          <div className="mt-2 text-[11.5px] text-[var(--ink2)]">Enter to send · Shift+Enter for a new line</div>
+          <div className="mt-2 flex items-center gap-2 text-[11.5px] text-[var(--ink2)]">
+            {dictation.error ? (
+              <>
+                <span className="text-[var(--accInk)]">{dictation.error}</span>
+                <button type="button" onClick={dictation.dismissError} className="underline underline-offset-2 transition-opacity hover:opacity-70">
+                  Dismiss
+                </button>
+              </>
+            ) : dictation.status === "recording" ? (
+              <span>Listening — press the timer to stop{dictation.seconds >= MAX_RECORDING_SECONDS - 15 ? `, ${MAX_RECORDING_SECONDS - dictation.seconds}s left` : ""}</span>
+            ) : dictation.status === "requesting" ? (
+              <span>Waiting for microphone access…</span>
+            ) : dictation.status === "transcribing" ? (
+              <span>Transcribing what you said…</span>
+            ) : (
+              <span>Enter to send · Shift+Enter for a new line</span>
+            )}
+            {/* Only once it's close -- a word count over an empty box is
+                noise, and this one exists to warn, not to keep score. */}
+            {isNearLimit(composerText, TEXT_LIMITS.capture) && (
+              <span className={`ml-auto tabular-nums ${countWords(composerText) >= TEXT_LIMITS.capture.words ? "font-medium text-[var(--accInk)]" : "text-[var(--ink3)]"}`}>
+                {countWords(composerText)} / {TEXT_LIMITS.capture.words} words
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
       <aside className="hidden min-h-0 w-1/2 flex-col border-l border-[var(--rule)] bg-[var(--sunk)] px-5 py-6 lg:flex">
         <div className="flex shrink-0 items-center justify-between gap-2">
           <div className="text-[11px] uppercase tracking-[0.11em] text-[var(--ink3)]">Your calendar</div>
-          <CalendarViewSwitcher value={viewMode} onChange={onViewModeChange} />
-        </div>
-        <div className="mt-2 flex shrink-0 items-center justify-between gap-2">
-          <CalendarChecklist calendars={calendars} checkedIds={checkedCalendarIds} onToggle={onToggleCalendar} onToggleAll={onToggleAllCalendars} />
+          {/* Today sits with the view switcher rather than with the arrows:
+              it's a jump to a fixed point, the same kind of move as changing
+              granularity, while the arrows are relative steps. */}
           <div className="flex items-center gap-1.5">
             <button
               type="button"
@@ -909,6 +1048,12 @@ function CaptureScreen({
             >
               Today
             </button>
+            <CalendarViewSwitcher value={viewMode} onChange={onViewModeChange} />
+          </div>
+        </div>
+        <div className="mt-2 flex shrink-0 items-center justify-between gap-2">
+          <CalendarChecklist calendars={calendars} checkedIds={checkedCalendarIds} onToggle={onToggleCalendar} onToggleAll={onToggleAllCalendars} />
+          <div className="flex items-center gap-1.5">
             <button
               type="button"
               onClick={onPrevView}
@@ -917,7 +1062,10 @@ function CaptureScreen({
             >
               <ChevronIcon direction="left" />
             </button>
-            <div className="text-[12px] text-[var(--ink2)]">{viewLabel(viewMode, anchor)}</div>
+            <div className="flex items-center gap-1.5 text-[12px] text-[var(--ink2)]">
+              {viewLabel(viewMode, anchor)}
+              {eventsLoading && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--acc)]" title="Loading your calendar" />}
+            </div>
             <button
               type="button"
               onClick={onNextView}
@@ -964,10 +1112,15 @@ function CaptureScreen({
   );
 }
 
-/** A "ready" entry is reopenable (it always has a draftId once settled) -- otherwise "Add another"/"Back" would orphan it with no way back to it. */
+/**
+ * A "ready" entry is reopenable (it always has a draftId once settled) --
+ * otherwise "Add another"/"Back" would orphan it with no way back to it. A
+ * stopped one becomes reopenable too, but only if its parse happened to land
+ * after the Stop; until then there's nothing to reopen.
+ */
 function HistoryBubble({ entry, onReopen }: { entry: HistoryEntry; onReopen: (draftId: string) => void }) {
   const kindLabel = { photo: "Photo", text: "Text", share: "Shared screenshot", voice: "Dictation" }[entry.kind];
-  const reopenable = entry.state === "ready" && !!entry.draftId;
+  const reopenable = (entry.state === "ready" || entry.state === "stopped") && !!entry.draftId;
   const [viewerOpen, setViewerOpen] = useState(false);
 
   const content = (
@@ -983,14 +1136,24 @@ function HistoryBubble({ entry, onReopen }: { entry: HistoryEntry; onReopen: (dr
               ? "bg-red-50 text-red-700"
               : entry.state === "ready"
                 ? "bg-[var(--coolWash)] text-[var(--coolInk)]"
-                : "bg-[var(--accWash)] text-[var(--accInk)]"
+                : entry.state === "stopped"
+                  ? "bg-[var(--sunk)] text-[var(--ink2)]"
+                  : "bg-[var(--accWash)] text-[var(--accInk)]"
           }`}
         >
-          {entry.state === "parsing" ? "parsing…" : entry.state === "ready" ? "parsed" : "failed"}
+          {entry.state === "parsing" ? "parsing…" : entry.state === "ready" ? "parsed" : entry.state === "stopped" ? "stopped" : "failed"}
         </div>
       </div>
       {entry.state === "error" && entry.errorMessage && (
         <div className="mt-1.5 text-[12px] leading-5 text-red-700">{entry.errorMessage}</div>
+      )}
+      {/* The request was already with the model when Stop was pressed, so it
+          can still come back with something -- say so rather than leaving a
+          reopenable bubble looking identical to a dead one. */}
+      {entry.state === "stopped" && (
+        <div className="mt-1.5 text-[12px] leading-5 text-[var(--ink2)]">
+          {entry.draftId ? "Finished anyway — tap to review it." : "Stopped waiting. Send it again if you still want it."}
+        </div>
       )}
     </>
   );
@@ -1066,7 +1229,8 @@ function LocationQuestionBubble({ question, onAnswer }: { question: LocationQues
       <div className="flex items-center gap-2 p-3">
         <input
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          maxLength={TEXT_LIMITS.location.chars}
+          onChange={(e) => setValue(clampText(e.target.value, TEXT_LIMITS.location))}
           onKeyDown={(e) => {
             if (e.key === "Enter" && value.trim()) {
               e.preventDefault();
@@ -1168,6 +1332,20 @@ function CameraIcon() {
   );
 }
 
+/** m:ss for a take that can't reach an hour -- see MAX_RECORDING_SECONDS. */
+function formatTake(seconds: number) {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function SpinnerIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" className="animate-spin" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
+      <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function MicIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -1182,6 +1360,14 @@ function FileTextIcon() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" />
       <path d="M14 2v5h5M8 13h8M8 17h8M8 9h3" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="5" y="5" width="14" height="14" rx="2.5" />
     </svg>
   );
 }

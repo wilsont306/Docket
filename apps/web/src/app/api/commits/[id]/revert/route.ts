@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 import { getDb } from "@/db";
 import { commits, drafts, parseRuns, captures } from "@/db/schema";
 import { deleteEvent } from "@/lib/google-calendar";
+import { invalidateUserCalendarCache } from "@/lib/calendar-cache";
 
 /**
  * POST /api/commits/:id/revert (FR-4.7.4's 10s undo window; also the
@@ -41,6 +42,8 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/commits/[i
       failures.push({ googleEventId, error: error instanceof Error ? error.message : "Unknown error" });
     }
   }
+
+  invalidateUserCalendarCache(session.user.id);
 
   const [updated] = await db
     .update(commits)

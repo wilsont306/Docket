@@ -29,3 +29,9 @@ services/guardrails/*.pyc
 # os / editor
 .DS_Store
 *.log
+
+# local tooling / scratch (never belongs in the repo)
+.claude/
+.impeccable/
+Images/
+*.zip

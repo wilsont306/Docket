@@ -4,6 +4,8 @@ import { auth } from "@/auth";
 import { getDb } from "@/db";
 import { googleCredentials } from "@/db/schema";
 import { decrypt } from "@/lib/crypto";
+import { forgetAccessToken } from "@/lib/google-calendar";
+import { invalidateUserCalendarCache } from "@/lib/calendar-cache";
 
 /**
  * POST /api/connections/google/disconnect -- revokes the OAuth grant at
@@ -38,6 +40,12 @@ export async function POST() {
     }
     await db.delete(googleCredentials).where(eq(googleCredentials.id, row.id));
   }
+
+  // The refresh token is gone, but an access token minted from it may still
+  // be held in memory -- drop it so a disconnected account can't keep
+  // reading the calendar until that token happens to expire.
+  forgetAccessToken(session.user.id);
+  invalidateUserCalendarCache(session.user.id);
 
   return NextResponse.json({ ok: true });
 }

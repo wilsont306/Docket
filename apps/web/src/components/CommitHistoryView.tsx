@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { DateTime } from "luxon";
+import { invalidateCalendarEvents } from "@/lib/use-calendar-events";
 
 interface CommitHistoryEntry {
   id: string;
@@ -53,6 +54,9 @@ export function CommitHistoryView({ onBack }: { onBack: () => void }) {
       const updated = await res.json();
       if (!res.ok) throw new Error(updated.error ?? "Failed to revert");
       setEntries((prev) => prev?.map((e) => (e.id === id ? { ...e, revertedAt: updated.revertedAt } : e)) ?? prev);
+      // Those events are off the real calendar now -- any cached range still
+      // holding them would draw them back on the next visit.
+      invalidateCalendarEvents();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to revert");
     } finally {
