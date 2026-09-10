@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { listEventsInRange } from "@/lib/google-calendar";
+import { getEventsInRange } from "@/lib/calendar-cache";
 
 /** GET /api/calendar/events?timeMin=...&timeMax=...&calendarId=...&calendarId=... (§6.5) — real events, merged across every checked calendar, for the review calendar pane. Repeat `calendarId` once per calendar; omitted entirely, defaults to "primary". */
 export async function GET(request: Request) {
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
   const calendarIds = searchParams.getAll("calendarId");
 
   try {
-    const events = await listEventsInRange(session.user.id, timeMin, timeMax, calendarIds.length > 0 ? calendarIds : undefined);
+    const events = await getEventsInRange(session.user.id, timeMin, timeMax, calendarIds.length > 0 ? calendarIds : ["primary"]);
     return NextResponse.json({ events });
   } catch (error) {
     console.error("Failed to list calendar events:", error);

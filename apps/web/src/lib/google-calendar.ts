@@ -16,11 +16,36 @@ export interface CalendarEvent {
 }
 
 /**
+ * Access tokens Google has already issued, held until shortly before they
+ * expire. Every calendar read used to open with its own refresh-token
+ * exchange, so a single week change cost two sequential round trips to
+ * Google (token, then events) -- and paging through weeks paid that twice
+ * per press. Google's access tokens are good for about an hour, so reusing
+ * one is what it's for.
+ *
+ * In-memory and therefore per-instance: a cold start or another instance
+ * just does the exchange once more, which is the pre-existing behavior. The
+ * refresh token itself still never leaves the server (FR-6.7.2), and only an
+ * access token derived from it is held here, never written anywhere.
+ */
+const accessTokens = new Map<string, { token: string; expiresAt: number }>();
+/** Renew this long before the real expiry, so a token can't lapse mid-request. */
+const EXPIRY_MARGIN_MS = 60_000;
+
+/** Dropped on sign-out/disconnect so a revoked grant can't keep working from cache. */
+export function forgetAccessToken(userId: string) {
+  accessTokens.delete(userId);
+}
+
+/**
  * Exchanges the stored refresh token for a short-lived access token. This is
  * the read side of the M0 exit criterion ("read own calendar"); the refresh
  * token itself never leaves the server (FR-6.7.2).
  */
 export async function getFreshAccessToken(userId: string): Promise<string> {
+  const cached = accessTokens.get(userId);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+
   const db = getDb();
   const [row] = await db
     .select({ encryptedRefreshToken: googleCredentials.encryptedRefreshToken })
@@ -49,7 +74,12 @@ export async function getFreshAccessToken(userId: string): Promise<string> {
     throw new Error(`Failed to refresh Google access token: ${response.status}`);
   }
 
-  const data = (await response.json()) as { access_token: string };
+  const data = (await response.json()) as { access_token: string; expires_in?: number };
+  // Google documents expires_in (seconds) on every refresh, but treat it as
+  // optional and fall back to a conservative 5 minutes rather than assuming
+  // an hour we were never promised.
+  const lifetimeMs = (data.expires_in ?? 300) * 1000;
+  accessTokens.set(userId, { token: data.access_token, expiresAt: Date.now() + Math.max(0, lifetimeMs - EXPIRY_MARGIN_MS) });
   return data.access_token;
 }
 
