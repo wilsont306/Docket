@@ -18,7 +18,7 @@ import type { CalendarEvent, CalendarListEntry } from "@/lib/google-calendar";
 import { preprocessImage } from "@/lib/image-preprocess";
 import { useMountReveal } from "@/lib/use-mount-reveal";
 import { useCalendarEvents, invalidateCalendarEvents } from "@/lib/use-calendar-events";
-import { MAX_RECORDING_SECONDS, useDictation, type DictationControls } from "@/lib/use-dictation";
+import { DICTATION_ENABLED, MAX_RECORDING_SECONDS, useDictation, type DictationControls } from "@/lib/use-dictation";
 import { TEXT_LIMITS, clampText, countWords, isNearLimit } from "@/lib/text-limits";
 
 interface CommitResult {
@@ -771,7 +771,7 @@ function CaptureScreen({
         <div className="shrink-0">
           <h1 className="text-[24px] font-bold leading-tight tracking-[-0.03em] lg:text-[33px]">What needs scheduling?</h1>
           <p className="mt-2 text-[13.5px] text-[var(--ink2)]">
-            Type it, paste it, attach a photo, or dictate it — review before anything&rsquo;s created.
+            {DICTATION_ENABLED ? "Type it, paste it, attach a photo, or dictate it" : "Type it, paste it, or attach a photo"} — review before anything&rsquo;s created.
           </p>
         </div>
 
@@ -808,17 +808,19 @@ function CaptureScreen({
                   body="A whiteboard, printed timetable, or roster. Multiple people's rows are fine."
                   onClick={onAttachClick}
                 />
-                <CaptureHint
-                  icon={<MicIcon />}
-                  iconBg="var(--greenWash)"
-                  iconColor="var(--greenInk)"
-                  title="Dictate"
-                  body="Tap the mic, say it, edit the transcript before sending if it mis-heard something."
-                  onClick={() => {
-                    dictation.toggle();
-                    textareaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-                  }}
-                />
+                {DICTATION_ENABLED && (
+                  <CaptureHint
+                    icon={<MicIcon />}
+                    iconBg="var(--greenWash)"
+                    iconColor="var(--greenInk)"
+                    title="Dictate"
+                    body="Tap the mic, say it, edit the transcript before sending if it mis-heard something."
+                    onClick={() => {
+                      dictation.toggle();
+                      textareaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    }}
+                  />
+                )}
               </div>
 
               <div className="flex items-center gap-3 text-[11.5px] text-[var(--ink3)]">
@@ -934,49 +936,53 @@ function CaptureScreen({
                 </button>
               </div>
               <div className="flex items-center gap-1">
-                {/* Recording and transcribing are the same button in
-                    different states rather than separate controls: the thing
-                    you press to start is the thing you reach for to stop. */}
-                <button
-                  type="button"
-                  onClick={dictation.toggle}
-                  disabled={busy || dictation.status === "transcribing" || dictation.status === "requesting" || !dictation.supported}
-                  className={`flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg transition-colors disabled:pointer-events-none ${
-                    dictation.status === "recording"
-                      ? "w-auto bg-[var(--accWash)] px-2.5 text-[var(--accInk)]"
-                      : "w-8 text-[var(--ink2)] hover:bg-[var(--sunk)]"
-                  } ${dictation.status === "transcribing" ? "opacity-60" : ""}`}
-                  aria-label={dictation.status === "recording" ? "Stop recording" : "Dictate"}
-                  title={
-                    !dictation.supported
-                      ? "This browser can't record audio"
-                      : dictation.status === "recording"
-                        ? "Stop recording"
-                        : dictation.status === "transcribing"
-                          ? "Transcribing…"
-                          : "Dictate"
-                  }
-                >
-                  {dictation.status === "recording" ? (
-                    <>
-                      <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[var(--acc)]" />
-                      <span className="font-mono text-[12px] tabular-nums">{formatTake(dictation.seconds)}</span>
-                    </>
-                  ) : dictation.status === "transcribing" ? (
-                    <SpinnerIcon />
-                  ) : (
-                    <MicIcon />
-                  )}
-                </button>
-                {dictation.status === "recording" && (
+                {DICTATION_ENABLED && (
+                  <>
+                  {/* Recording and transcribing are the same button in
+                      different states rather than separate controls: the thing
+                      you press to start is the thing you reach for to stop. */}
                   <button
                     type="button"
-                    onClick={dictation.cancel}
-                    className="flex h-8 shrink-0 items-center justify-center rounded-lg px-2 text-[12px] font-medium text-[var(--ink2)] transition-colors hover:bg-[var(--sunk)]"
-                    title="Discard this recording"
+                    onClick={dictation.toggle}
+                    disabled={busy || dictation.status === "transcribing" || dictation.status === "requesting" || !dictation.supported}
+                    className={`flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg transition-colors disabled:pointer-events-none ${
+                      dictation.status === "recording"
+                        ? "w-auto bg-[var(--accWash)] px-2.5 text-[var(--accInk)]"
+                        : "w-8 text-[var(--ink2)] hover:bg-[var(--sunk)]"
+                    } ${dictation.status === "transcribing" ? "opacity-60" : ""}`}
+                    aria-label={dictation.status === "recording" ? "Stop recording" : "Dictate"}
+                    title={
+                      !dictation.supported
+                        ? "This browser can't record audio"
+                        : dictation.status === "recording"
+                          ? "Stop recording"
+                          : dictation.status === "transcribing"
+                            ? "Transcribing…"
+                            : "Dictate"
+                    }
                   >
-                    Discard
+                    {dictation.status === "recording" ? (
+                      <>
+                        <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[var(--acc)]" />
+                        <span className="font-mono text-[12px] tabular-nums">{formatTake(dictation.seconds)}</span>
+                      </>
+                    ) : dictation.status === "transcribing" ? (
+                      <SpinnerIcon />
+                    ) : (
+                      <MicIcon />
+                    )}
                   </button>
+                  {dictation.status === "recording" && (
+                    <button
+                      type="button"
+                      onClick={dictation.cancel}
+                      className="flex h-8 shrink-0 items-center justify-center rounded-lg px-2 text-[12px] font-medium text-[var(--ink2)] transition-colors hover:bg-[var(--sunk)]"
+                      title="Discard this recording"
+                    >
+                      Discard
+                    </button>
+                  )}
+                  </>
                 )}
                 {/* Takes Send's place rather than sitting beside it: while
                     something is parsing there's nothing to send anyway, and

@@ -3,6 +3,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
+ * Dictation is built and tested end to end, but it's switched off in the UI
+ * until the AI Gateway has a credential in production (AI_GATEWAY_API_KEY,
+ * or an OIDC-enabled project). Without one the transcription call fails and
+ * the mic can only ever report that it couldn't hear you -- a control that
+ * is always going to fail is worse than no control, so it isn't offered.
+ *
+ * Flip this to true once the key is set; nothing else has to change. The
+ * route, the recorder and the transcription stage all stay wired up in the
+ * meantime, so re-enabling is this one line.
+ */
+export const DICTATION_ENABLED = false;
+
+/**
  * Hard stop on a take. Long enough for anyone describing an appointment out
  * loud, short enough that a mic left running by accident (a tab backgrounded
  * mid-recording, say) can't quietly upload minutes of room audio.
