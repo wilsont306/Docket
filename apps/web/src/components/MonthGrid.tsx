@@ -77,10 +77,6 @@ export function MonthGrid({
         const dayDrafts: DayItem[] = draftBlocks
           .filter((d) => d.start.hasSame(day, "day"))
           .map((d) => ({ key: `draft-${d.id}`, label: d.title, time: d.allDay ? null : d.start.toFormat("h:mm a"), color: null }));
-        // Same idea as the week view's full-column blob, at this zoom: an
-        // all-day draft claims the whole cell rather than one line of it.
-        const hasAllDayDraft = draftBlocks.some((d) => d.allDay && d.start.hasSame(day, "day"));
-
         const items = [...dayReal, ...dayDrafts];
         const visible = items.slice(0, MAX_VISIBLE_PER_DAY);
         const overflow = items.length - visible.length;
@@ -91,14 +87,7 @@ export function MonthGrid({
             key={day.toISODate()}
             onClick={() => onSelectDay(day)}
             className="flex min-h-0 flex-col items-stretch gap-0.5 overflow-hidden border-b border-l border-[var(--rule2)] p-1 text-left transition-colors hover:brightness-95"
-            style={{
-              background: hasAllDayDraft
-                ? "color-mix(in oklch, var(--accWash) 62%, transparent)"
-                : inMonth
-                  ? "var(--surf)"
-                  : "var(--sunk)",
-              ...(hasAllDayDraft ? { boxShadow: "inset 0 0 0 1.5px var(--accEdge)" } : {}),
-            }}
+            style={{ background: inMonth ? "var(--surf)" : "var(--sunk)" }}
           >
             <span
               className={`self-start rounded-full px-1.5 text-[11px] font-semibold ${

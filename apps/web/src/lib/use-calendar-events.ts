@@ -61,6 +61,11 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener);
 }
 
+/** Months for anything week- or month-sized, years above that -- see chunksFor. */
+function chunkUnitFor(range: CalendarRange): "month" | "year" {
+  return range.end.diff(range.start, "days").days > YEAR_CHUNK_THRESHOLD_DAYS ? "year" : "month";
+}
+
 /**
  * The unit actually fetched and cached.
  *
@@ -73,8 +78,7 @@ function subscribe(listener: () => void) {
  * all, and moving between months reuses the chunks the two views share.
  */
 function chunksFor(range: CalendarRange): CalendarRange[] {
-  const spanDays = range.end.diff(range.start, "days").days;
-  const unit = spanDays > YEAR_CHUNK_THRESHOLD_DAYS ? "year" : "month";
+  const unit = chunkUnitFor(range);
 
   const chunks: CalendarRange[] = [];
   let cursor = range.start.startOf(unit);
@@ -85,6 +89,30 @@ function chunksFor(range: CalendarRange): CalendarRange[] {
     cursor = cursor.plus({ [unit]: 1 });
   }
   return chunks;
+}
+
+/**
+ * The chunk either side of the ones a range covers.
+ *
+ * Warming the *view's* neighbours isn't enough, and was the hole in the
+ * first version of this: every week in the middle of a month has neighbours
+ * inside that same month, so they resolve to the chunk already loaded and
+ * nothing gets warmed at all. The month boundary was then always a cold
+ * fetch -- stepping was instant for four weeks and then stalled, which is
+ * exactly the delay this was supposed to remove. Warming the adjacent
+ * chunks instead means the next month is already in hand long before you
+ * reach it.
+ */
+function neighbourChunksFor(range: CalendarRange): CalendarRange[] {
+  const unit = chunkUnitFor(range);
+  const chunks = chunksFor(range);
+  if (chunks.length === 0) return [];
+  const first = chunks[0];
+  const last = chunks[chunks.length - 1];
+  return [
+    { start: first.start.minus({ [unit]: 1 }), end: first.start },
+    { start: last.end, end: last.end.plus({ [unit]: 1 }) },
+  ];
 }
 
 /** The request for one chunk, which doubles as its cache key -- same window + same calendars means the same query string. */
@@ -145,9 +173,10 @@ function boundsOf(event: CalendarEvent): { start: number; end: number } | null {
  *
  * Fetching is done in whole-month (or whole-year) chunks and then clipped
  * back to `range`, so callers still only see the events they asked for while
- * navigation inside a chunk costs nothing. `prefetch` ranges are warmed in
- * the background once the visible chunks have settled, which covers stepping
- * across a chunk boundary.
+ * navigation inside a chunk costs nothing. Once the visible chunks settle,
+ * the caller's `prefetch` ranges *and* the chunks either side of the visible
+ * ones are warmed in the background, so crossing a boundary is already in
+ * hand by the time you reach it.
  *
  * A range whose chunks have never loaded reports `loading` and no events,
  * rather than holding the previous range's -- last week's meetings drawn
@@ -167,7 +196,14 @@ export function useCalendarEvents(
   const queryKey = chunksFor(range)
     .map((chunk) => chunkKey(ids, chunk))
     .join("\n");
-  const prefetchKey = [...new Set(prefetch.flatMap((r) => chunksFor(r).map((chunk) => chunkKey(ids, chunk))))]
+  // Both the caller's neighbouring views and the chunks either side of the
+  // visible ones -- see neighbourChunksFor for why the former alone leaves
+  // every month boundary cold.
+  const prefetchKey = [
+    ...new Set(
+      [...prefetch, ...neighbourChunksFor(range)].flatMap((r) => chunksFor(r).map((chunk) => chunkKey(ids, chunk))),
+    ),
+  ]
     .filter((query) => !queryKey.split("\n").includes(query))
     .join("\n");
 

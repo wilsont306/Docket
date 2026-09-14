@@ -129,13 +129,12 @@ export function WeekCalendar({
   onSelectDraft: (id: string) => void;
 }) {
   const revealed = useMountReveal();
-  // An all-day draft -- a due date, typically -- is drawn twice: its named
-  // chip in the frozen band up top (where it can't be scrolled away or
-  // covered), plus a wash claiming that whole day column below
-  // (`allDayDraftsFor`), so a deadline reads as "this day is spoken for"
-  // rather than as one thin line that's easy to miss. The full-column wash is
-  // this pane's own emphasis; on Google Calendar the same event is an
-  // ordinary all-day event in the all-day row.
+  // An all-day draft -- a due date, typically -- shows as its named chip in
+  // the frozen band up top, where it can't be scrolled away or covered. It
+  // used to also wash the whole day column below to read as "this day is
+  // spoken for", but that buried whatever was actually scheduled that day
+  // behind a full-height blob; the chip carries the same information without
+  // taking the column hostage, and matches how Google Calendar shows one.
   const hasAllDay = draftBlocks.some((d) => d.allDay) || realEvents.some(isAllDayRealEvent);
   const draftBlockRefs = useRef(new Map<string, HTMLElement>());
   const resolveColor = (e: CalendarEvent): string => resolveEventColor(e, calendarColors);
@@ -276,7 +275,6 @@ export function WeekCalendar({
             const laidOut = layoutOverlaps([...dayTimedReal, ...dayTimedDrafts]);
             const realById = new Map(realEvents.map((e) => [`real-${e.id}`, e]));
             const draftById = new Map(draftBlocks.map((d) => [`draft-${d.id}`, d]));
-            const allDayDraftsFor = draftBlocks.filter((d) => d.allDay && coversDay(d, day));
 
             return (
               <div key={`grid-${day.toISODate()}`} className="relative border-l border-[var(--rule2)] bg-[var(--surf)]" style={{ height: gridHeight }}>
@@ -285,43 +283,6 @@ export function WeekCalendar({
                   // bottom border directly above it.
                   i > 0 && <div key={i} className="absolute left-0 right-0 border-t border-[var(--rule2)]" style={{ top: i * HOUR_HEIGHT }} />
                 ))}
-
-                {/* Rendered before the timed blocks so those paint on top of it:
-                    the wash claims the day, it doesn't lid over whatever else
-                    is scheduled in it. Deliberately unlabeled -- the draft's
-                    name lives in the frozen band above, where nothing can
-                    scroll it away or cover it; a second copy pinned inside the
-                    column would collide with any early-morning event. */}
-                {allDayDraftsFor.map((d, index) => {
-                  const isSelected = d.id === selectedId;
-                  const widthPct = 100 / allDayDraftsFor.length;
-                  const draftIndex = draftBlocks.findIndex((b) => b.id === d.id);
-                  return (
-                    // No scroll-into-view ref: an all-day draft is already
-                    // fully on screen in the frozen band, so selecting one
-                    // shouldn't yank the hourly grid down to this column's
-                    // midpoint.
-                    <button
-                      key={`allday-${d.id}`}
-                      type="button"
-                      onClick={() => onSelectDraft(d.id)}
-                      title={`${d.title} — all day`}
-                      aria-label={`${d.title} — all day`}
-                      className="absolute rounded-lg transition-[opacity,transform,filter] duration-500 ease-[cubic-bezier(.2,.6,.2,1)] hover:brightness-95"
-                      style={{
-                        top: 0,
-                        height: gridHeight,
-                        left: `${index * widthPct}%`,
-                        width: `calc(${widthPct}% - 2px)`,
-                        border: `${isSelected ? "2.5px dashed" : "1.5px dashed"} var(--acc)`,
-                        background: "color-mix(in oklch, var(--accWash) 62%, transparent)",
-                        opacity: revealed ? 1 : 0,
-                        transform: revealed ? "translateY(0)" : "translateY(6px)",
-                        transitionDelay: revealed ? `${draftIndex * 45}ms` : "0ms",
-                      }}
-                    />
-                  );
-                })}
 
                 {laidOut.map(({ item, column, totalColumns }) => {
                   const top = Math.max(0, timeToOffset(item.start, startHour));

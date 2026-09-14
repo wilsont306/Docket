@@ -544,13 +544,6 @@ export function ReviewSurface({
             <div className="flex items-center gap-1.5"><span className="h-[11px] w-[17px] rounded bg-[var(--coolWash)] ring-1 ring-[var(--coolEdge)]" />Already on Work</div>
             <div className="flex items-center gap-1.5"><span className="h-[11px] w-[17px] rounded border-[1.5px] border-dashed border-[var(--acc)] bg-[var(--accWash)]" />Proposed — not saved</div>
             <div className="flex items-center gap-1.5"><span className="h-[11px] w-[17px] rounded border-[1.5px] border-[var(--acc)] bg-[var(--surf)]" />Wants a look</div>
-            <div className="flex items-center gap-1.5">
-              <span
-                className="h-[11px] w-[17px] rounded border-[1.5px] border-dashed border-[var(--acc)]"
-                style={{ background: "color-mix(in oklch, var(--accWash) 62%, transparent)" }}
-              />
-              All day — claims the whole day
-            </div>
             <div className="flex items-center gap-1.5"><span className="h-1 w-[17px] rounded bg-[var(--cool)]" />Overlaps something real</div>
           </div>
         </div>
