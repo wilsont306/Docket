@@ -21,7 +21,7 @@ export default async function Dashboard() {
 
   return (
     <CaptureFlow
-      userEmail={session.user.email ?? "wilsont@gmail.com"}
+      userEmail={session.user.email ?? ""}
       userImage={settings?.avatarUrl ?? null}
       initialTheme={settings?.theme ?? "system"}
       initialAutoConfirm={settings?.autoConfirmEnabled ?? false}
