@@ -1,0 +1,1 @@
+ALTER TABLE "commits" ADD COLUMN "calendar_id" text DEFAULT 'primary' NOT NULL;
