@@ -5,6 +5,10 @@
 <h1 align="center">Docket</h1>
 
 <p align="center">
+  <a href="https://github.com/wilsont306/Docket/actions/workflows/ci.yml"><img src="https://github.com/wilsont306/Docket/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+</p>
+
+<p align="center">
   Turn photos, screenshots, pasted text and voice notes into Google Calendar events,<br />
   and check every one against your real calendar before anything is written.
 </p>
